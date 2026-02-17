@@ -76,8 +76,8 @@ CalRSSI calRSSI;
 CWIdTX cwIdTX;
 
 /* RS232 and Air Interface I/O */
-modem::SerialPortSDR serial;
-IO io;
+modem::SerialPort serial;
+modem::IO io;
 
 std::string g_progExe = std::string(__EXE_NAME__);
 
@@ -100,15 +100,12 @@ extern modem::port::PseudoPTYPort* m_serialPort;
 
 void setup()
 {
-    io.init();
-
     serial.start();
 }
 
 void loop()
 {
     serial.process();
-
     io.process();
 
     // The following is for transmitting

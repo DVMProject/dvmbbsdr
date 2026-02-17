@@ -12,6 +12,8 @@
 #include "Globals.h"
 #include "modem/SerialPort.h"
 #include "modem/port/UARTPort.h"
+#include "common/Log.h"
+#include "common/Utils.h"
 
 using namespace modem;
 
@@ -634,6 +636,9 @@ void SerialPort::writeDebug(const char* text)
     if (!m_debug)
         return;
 
+    if (g_debug)
+        ::LogDebug("DSP_FW_API %s", text);
+
     uint8_t reply[130U];
     ::memset(reply, 0x00U, 130U);
 
@@ -656,6 +661,9 @@ void SerialPort::writeDebug(const char* text, int16_t n1)
 {
     if (!m_debug)
         return;
+
+        if (g_debug)
+        ::LogDebug("DSP_FW_API %s %X", text, n1);
 
     uint8_t reply[130U];
     ::memset(reply, 0x00U, 130U);
@@ -682,6 +690,9 @@ void SerialPort::writeDebug(const char* text, int16_t n1, int16_t n2)
 {
     if (!m_debug)
         return;
+
+    if (g_debug)
+        ::LogDebug("DSP_FW_API %s %X %X", text, n1, n2);
 
     uint8_t reply[130U];
     ::memset(reply, 0x00U, 130U);
@@ -711,6 +722,9 @@ void SerialPort::writeDebug(const char* text, int16_t n1, int16_t n2, int16_t n3
 {
     if (!m_debug)
         return;
+
+    if (g_debug)
+        ::LogDebug("DSP_FW_API %s %X %X %X", text, n1, n2, n3);
 
     uint8_t reply[130U];
     ::memset(reply, 0x00U, 130U);
@@ -743,6 +757,9 @@ void SerialPort::writeDebug(const char* text, int16_t n1, int16_t n2, int16_t n3
 {
     if (!m_debug)
         return;
+
+    if (g_debug)
+        ::LogDebug("DSP_FW_API %s %X %X %X %X", text, n1, n2, n3, n4);
 
     uint8_t reply[130U];
     ::memset(reply, 0x00U, 130U);
@@ -778,6 +795,9 @@ void SerialPort::writeDump(const uint8_t* data, uint16_t length)
 {
     if (!m_debug)
         return;
+
+    if (g_debug)
+        Utils::dump(1U, "DSP_FW_API Dump", data, length);
 
     if (length + 4U > 516U) {
         m_buffer[2U] = CMD_DEBUG_DUMP;

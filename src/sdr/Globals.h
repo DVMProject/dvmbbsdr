@@ -22,7 +22,6 @@
 
 #include "Defines.h"
 #include "modem/SerialPort.h"
-#include "modem/SerialPortSDR.h"
 
 #include "dmr/DMRIdleRX.h"
 #include "dmr/DMRDMORX.h"
@@ -42,7 +41,7 @@
 #include "CalRSSI.h"
 #include "CWIdTX.h"
 
-#include "IO.h"
+#include "modem/IO.h"
 
 #include <cstring>
 
@@ -88,8 +87,8 @@ extern bool m_duplex;
 extern bool m_tx;
 extern bool m_dcd;
 
-extern modem::SerialPortSDR serial;
-extern IO io;
+extern modem::SerialPort serial;
+extern modem::IO io;
 
 /* DMR BS */
 extern dmr::DMRIdleRX dmrIdleRX;
