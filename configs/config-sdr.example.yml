@@ -1,0 +1,65 @@
+#
+# Digital Voice Modem - SDR Software Configuration
+#
+
+# Flag indicating whether the host will run as a background or foreground task.
+daemon: true
+
+#
+# Logging Configuration
+#
+#   Logging Levels:
+#     1 - Debug
+#     2 - Informational
+#     3 - Warning
+#     4 - Error
+#     5 - Fatal
+#
+log:
+    # Console display logging level (used when in foreground).
+    displayLevel: 1
+    # File logging level.
+    fileLevel: 1
+    # Flag indicating file logs should be sent to syslog instead of a file.
+    useSyslog: false
+    # Full path for the directory to store the log files.
+    filePath: .
+    # Log filename prefix.
+    fileRoot: DVMSDR
+
+#
+# Digital Protocol Configuration
+#
+protocols:
+    #
+    # Digital Mobile Radio
+    #
+    dmr:
+        # Flag indicating whether or not the protocol is enabled.
+        enable: true
+        # Flag indicating whether or not verbose logging is enabled.
+        verbose: true
+        # Flag indicating whether or not debug logging is enabled.
+        debug: false
+    
+    #
+    # Project 25
+    #
+    p25:
+        # Flag indicating whether or not the protocol is enabled.
+        enable: true
+        # Flag indicating whether or not verbose logging is enabled.
+        verbose: true
+        # Flag indicating whether or not debug logging is enabled.
+        debug: false
+
+    #
+    # Next Generation Digital Narrowband
+    #
+    nxdn:
+        # Flag indicating whether or not the protocol is enabled.
+        enable: false
+        # Flag indicating whether or not verbose logging is enabled.
+        verbose: true
+        # Flag indicating whether or not debug logging is enabled.
+        debug: false

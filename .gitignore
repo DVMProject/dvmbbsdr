@@ -1,0 +1,103 @@
+# Ignore built binaries
+build/
+build*/
+dvmcmd
+dvmhost
+dvmdfsi
+
+# Ignore CMake temporary files
+CMakeLists.txt.user
+CMakeCache.txt
+CMakeFiles
+CMakeScripts
+CPackConfig.cmake
+CPackSourceConfig.cmake
+Voice.plist
+Testing
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps
+
+# Ignore thumbnails created by windows
+Thumbs.db
+
+# Ignore files created by clang-check
+*.plist
+
+# Ignore files build by Visual Studio
+*.obj
+*.pdb
+*.mdb 	# Mono debug file
+*.user
+*.aps
+*.pch
+*.vspscc
+*_i.c
+*_p.c
+*.ncb
+*.suo
+*.tlb
+*.tlh
+*.bak
+*.cache
+*.ilk
+*.log
+[Bb]in
+[Dd]ebug*/
+*.lib
+*.sbr
+[Oo]bj*/
+[Rr]elease*/
+[R]elease*/
+_ReSharper*/
+[Tt]est[Rr]esult*
+*.sdf
+*.opensdf
+*.userprefs
+build.mk
+*.prv.xml
+*.pub.xml
+build/
+.vscode/
+package/
+*.ini
+.vs
+.idea/
+venv/
+__pycache__/
+*.pyc
+
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
