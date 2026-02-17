@@ -127,6 +127,13 @@ int SDR::run()
     if (!ret)
         return EXIT_FAILURE;
 
+    /*
+    ** bryanb: we probably need to perform GNU Radio setup here -- we definitely should do this before
+    **  any virtual modem init, because those will need to setup whatever blocks for the frequencies and such
+    **  they'll be on inside the Modem class
+    ** TODO TODO TODO
+    */
+
     // initialize modems
     ret = createModems();
     if (!ret)
@@ -165,6 +172,12 @@ int SDR::run()
             modem->close();
         }
     }
+
+    /*
+    ** bryanb: we probably need to perform GNU Radio shutdown here -- we definitely should do this after
+    **  any virtual modem shutdown
+    ** TODO TODO TODO
+    */
 
     return EXIT_SUCCESS;
 }

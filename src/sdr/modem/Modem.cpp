@@ -71,7 +71,9 @@ bool Modem::open()
 
     /*
     ** TODO TODO TODO: this should probably be setting up whatever is needed
-    **  on GNU Radio to have carrier frequency running
+    **  on GNU Radio to be prepared for a carrier frequency -- we have a bit of a chick and egg
+    **  problem though, because we aren't *told* what frequency we'll be on until the dvmhost attaches
+    **  and sends the SET_RF_PARAMS command via the PTY
     */
 
     return true;
