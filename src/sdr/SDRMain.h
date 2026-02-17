@@ -35,6 +35,8 @@ extern std::string g_iniFile;
 extern bool g_foreground;
 /** @brief (Global) Flag indicating the FNE should stop immediately. */
 extern bool g_killed;
+/** @brief (Global) Flag indicating debug mode. */
+extern bool g_debug;
 
 extern uint8_t* g_gitHashBytes;
 

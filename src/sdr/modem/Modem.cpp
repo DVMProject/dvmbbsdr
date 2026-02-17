@@ -22,6 +22,7 @@ using namespace modem;
 /* Initializes a new instance of the Modem class. */
 
 Modem::Modem(port::IModemPort* port, bool verbose, bool debug) :
+    m_port(port),
     m_modemState(STATE_IDLE),
     m_dmrEnable(true),
     m_p25Enable(true),

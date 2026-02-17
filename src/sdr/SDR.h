@@ -20,6 +20,7 @@
 #include "common/yaml/Yaml.h"
 
 #include <string>
+#include <vector>
 #include <mutex>
 
 // ---------------------------------------------------------------------------
@@ -52,6 +53,8 @@ private:
     const std::string& m_confFile;
     yaml::Node m_conf;
 
+    std::vector<modem::Modem*> m_modems;
+
     static bool s_running;
     bool m_trace;
     bool m_debug;
@@ -61,6 +64,11 @@ private:
      * @returns bool True, if configuration was read successfully, otherwise false.
      */
     bool readParams();
+    /**
+     * @brief Initializes the virtual modems.
+     * @returns bool True, if the modems were initialized successfully, otherwise false.
+     */
+    bool createModems();
 };
 
 #endif // __SDR_H__
