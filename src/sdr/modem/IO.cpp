@@ -98,46 +98,6 @@ static bool m_p25Mode = false;
 static bool m_nxdnModeToggle = false;
 static bool m_nxdnMode = false;
 
-/*  */
-
-static void* modemStatusHelper(void* arg)
-{
-    IO* io = (IO*)arg;
-    if (io != nullptr) {
-        while (!m_abort) {
-            // log flag statuses
-            if (m_cosPrev != m_cosInt) {
-                ::LogInfoEx(LOG_SDR, "COS %s", m_cosInt ? "DETECT" : "NO CARRIER");
-                m_cosPrev = m_cosInt;
-            }
-
-            if (m_pttPrev != m_ptt) {
-                ::LogInfoEx(LOG_SDR, "PTT %s", m_ptt ? "TRANSMIT" : "IDLE");
-                m_pttPrev = m_ptt;
-            }
-
-            if (m_dmrModeToggle) {
-                ::LogInfoEx(LOG_SDR, "DMR Mode %s", m_dmrMode ? "ENABLED" : "DISABLED");
-                m_dmrModeToggle = false;
-            }
-
-            if (m_p25ModeToggle) {
-                ::LogInfoEx(LOG_SDR, "P25 Mode %s", m_p25Mode ? "ENABLED" : "DISABLED");
-                m_p25ModeToggle = false;
-            }
-
-            if (m_nxdnModeToggle) {
-                ::LogInfoEx(LOG_SDR, "NXDN Mode %s", m_nxdnMode ? "ENABLED" : "DISABLED");
-                m_nxdnModeToggle = false;
-            }
-
-            ::usleep(1000U);
-        }
-    }
-
-    return nullptr;
-}
-
 // ---------------------------------------------------------------------------
 //  Public Class Members
 // ---------------------------------------------------------------------------
@@ -608,6 +568,8 @@ void IO::setParameters(bool rxInvert, bool txInvert, bool pttInvert, uint8_t rxL
     m_rxDCOffset = DC_OFFSET + rxDCOffset;
     m_txDCOffset = DC_OFFSET + txDCOffset;
 
+    ::LogInfoEx(LOG_SDR, "Modem %u (%s) RX LVL: %u CWID TX LVL: %u DMR TX LVL: %u P25 TX LVL: %u NXDN TX LVL: %u", m_modem->m_modemId, m_modem->m_modemPty.c_str(), m_rxLevel, m_cwIdTXLevel, m_dmrTXLevel, m_p25TXLevel, m_nxdnTXLevel);
+
     if (rxInvert) {
         m_rxInvert = rxInvert;
         m_rxLevel = -m_rxLevel;
@@ -618,6 +580,8 @@ void IO::setParameters(bool rxInvert, bool txInvert, bool pttInvert, uint8_t rxL
         m_p25TXLevel = -m_p25TXLevel;
         m_nxdnTXLevel = -m_nxdnTXLevel;
     }
+
+    ::LogInfoEx(LOG_SDR, "Modem %u (%s) RX INVERT: %u TX INVERT: %u RX DC OFFSET: %u TX DC OFFSET: %u", m_modem->m_modemId, m_modem->m_modemPty.c_str(), m_rxInvert, txInvert, m_rxDCOffset, m_txDCOffset);
 }
 
 /* Sets the software Rx sample level. */
@@ -660,7 +624,7 @@ uint8_t IO::setRFParams(uint32_t rxFreq, uint32_t txFreq, uint8_t rfPower)
     m_rxFrequency = rxFreq;
     m_txFrequency = txFreq;
 
-    m_modem->writeDebug("IO::setRFParams() setting RF params", m_rxFrequency, m_txFrequency, m_rfPower);
+    ::LogInfoEx(LOG_SDR, "Modem %u (%s) RX FREQ: %u TX FREQ: %u PWR: %u", m_modem->m_modemId, m_modem->m_modemPty.c_str(), m_rxFrequency, m_txFrequency, m_rfPower);
 
     return RSN_OK;
 }
@@ -769,7 +733,13 @@ void IO::resetMCU()
 
 void IO::startInt()
 {
-    ::LogInfoEx(LOG_SDR, "Host connected, starting IO operations...");
+    ::LogInfoEx(LOG_SDR, "Modem %u (%s) host connected, starting Rx/Tx...", m_modem->m_modemId, m_modem->m_modemPty.c_str());
+
+    /*
+    ** bryanb: at this point we *should* have received configuration data from the host, which includes frequency
+    **  we should create an entry point on the Modem class to call back and set the frequency data for this modem
+    ** TODO TODO TODO
+    */
 
     m_audioBufTx = std::vector<short>();
     m_audioBufRx = std::vector<short>();
@@ -854,6 +824,46 @@ void IO::setNXDNInt(bool on)
 void IO::delayInt(unsigned int dly)
 {
     ::usleep(dly * 1000U);
+}
+
+/*  */
+
+void* IO::modemStatusHelper(void* arg)
+{
+    IO* io = (IO*)arg;
+    if (io != nullptr) {
+        while (!m_abort) {
+            // log flag statuses
+            if (m_cosPrev != m_cosInt) {
+                ::LogInfoEx(LOG_SDR, "Modem %u (%s) COS %s", io->m_modem->m_modemId, io->m_modem->m_modemPty.c_str(), m_cosInt ? "DETECT" : "NO CARRIER");
+                m_cosPrev = m_cosInt;
+            }
+
+            if (m_pttPrev != m_ptt) {
+                ::LogInfoEx(LOG_SDR, "Modem %u (%s) PTT %s", io->m_modem->m_modemId, io->m_modem->m_modemPty.c_str(), m_ptt ? "TRANSMIT" : "IDLE");
+                m_pttPrev = m_ptt;
+            }
+
+            if (m_dmrModeToggle) {
+                ::LogInfoEx(LOG_SDR, "Modem %u (%s) DMR Mode %s", io->m_modem->m_modemId, io->m_modem->m_modemPty.c_str(), m_dmrMode ? "ENABLED" : "DISABLED");
+                m_dmrModeToggle = false;
+            }
+
+            if (m_p25ModeToggle) {
+                ::LogInfoEx(LOG_SDR, "Modem %u (%s) P25 Mode %s", io->m_modem->m_modemId, io->m_modem->m_modemPty.c_str(), m_p25Mode ? "ENABLED" : "DISABLED");
+                m_p25ModeToggle = false;
+            }
+
+            if (m_nxdnModeToggle) {
+                ::LogInfoEx(LOG_SDR, "Modem %u (%s) NXDN Mode %s", io->m_modem->m_modemId, io->m_modem->m_modemPty.c_str(), m_nxdnMode ? "ENABLED" : "DISABLED");
+                m_nxdnModeToggle = false;
+            }
+
+            ::usleep(1000U);
+        }
+    }
+
+    return nullptr;
 }
 
 /*  */

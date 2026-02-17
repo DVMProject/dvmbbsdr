@@ -273,7 +273,7 @@ bool SDR::createModems()
 
             modemPort = new port::PseudoPTYPort(uartPort, serialSpeed, false);
 
-            Modem* modem = new Modem(modemPort, trace, debug);
+            Modem* modem = new Modem(modemPort, (uint8_t)i, uartPort, trace, debug);
 
             bool ret = modem->open();
             if (!ret) {

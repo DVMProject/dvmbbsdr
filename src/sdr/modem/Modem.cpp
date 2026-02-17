@@ -11,7 +11,10 @@
  *
  */
 #include "modem/Modem.h"
+#include "common/Thread.h"
+#include "common/StopWatch.h"
 #include "common/Log.h"
+#include "SDRMain.h"
 
 using namespace modem;
 
@@ -21,8 +24,10 @@ using namespace modem;
 
 /* Initializes a new instance of the Modem class. */
 
-Modem::Modem(port::IModemPort* port, bool verbose, bool debug) :
+Modem::Modem(port::IModemPort* port, uint8_t id, std::string ptyPort, bool verbose, bool debug) :
     m_port(port),
+    m_modemId(id + 1),
+    m_modemPty(ptyPort),
     m_modemState(STATE_IDLE),
     m_dmrEnable(true),
     m_p25Enable(true),
@@ -75,6 +80,13 @@ bool Modem::open()
     **  problem though, because we aren't *told* what frequency we'll be on until the dvmhost attaches
     **  and sends the SET_RF_PARAMS command via the PTY
     */
+
+    /*
+    ** Initialize Threads
+    */
+
+    if (!Thread::runAsThread(this, threadClock))
+        return EXIT_FAILURE;
 
     return true;
 }
@@ -171,6 +183,63 @@ void Modem::writeDump(const uint8_t* data, uint16_t length)
 // ---------------------------------------------------------------------------
 //  Private Class Members
 // ---------------------------------------------------------------------------
+
+/* Entry point to clock thread. */
+
+void* Modem::threadClock(void* arg)
+{
+    thread_t* th = (thread_t*)arg;
+    if (th != nullptr) {
+#if defined(_WIN32)
+        ::CloseHandle(th->thread);
+#else
+        ::pthread_detach(th->thread);
+#endif // defined(_WIN32)
+
+        std::string threadName("modem:clock");
+        Modem* modem = static_cast<Modem*>(th->obj);
+        if (modem == nullptr) {
+            g_killed = true;
+            LogError(LOG_HOST, "[FAIL] %s", threadName.c_str());
+        } else {
+            threadName = "modem:clock:" + std::to_string(modem->m_modemId);
+        }
+
+        if (g_killed) {
+            delete th;
+            return nullptr;
+        }
+
+        LogInfoEx(LOG_HOST, "[ OK ] %s (%s)", threadName.c_str(), modem->m_modemPty.c_str());
+#ifdef _GNU_SOURCE
+        ::pthread_setname_np(th->thread, threadName.c_str());
+#endif // _GNU_SOURCE
+
+        StopWatch stopWatch;
+        stopWatch.start();
+
+        while (!g_killed) {
+            // scope is intentional
+            {
+                // ------------------------------------------------------
+                //  -- RPC Clocking                                   --
+                // ------------------------------------------------------
+
+                uint32_t ms = stopWatch.elapsed();
+                stopWatch.start();
+
+                modem->clock(ms);
+            }
+
+            Thread::sleep(1U);
+        }
+
+        LogInfoEx(LOG_HOST, "[STOP] %s", threadName.c_str());
+        delete th;
+    }
+
+    return nullptr;
+}
 
 /* Read samples queued for reception. */
 

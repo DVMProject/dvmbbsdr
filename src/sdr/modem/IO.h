@@ -363,6 +363,13 @@ namespace modem
         /**
          * @brief 
          * @param arg 
+         * @return void* 
+         */
+        static void* modemStatusHelper(void* arg);
+
+        /**
+         * @brief 
+         * @param arg 
          * @returns void* 
          */
         static void* txThreadHelper(void* arg);

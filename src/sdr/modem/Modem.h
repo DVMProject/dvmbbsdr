@@ -70,10 +70,12 @@ namespace modem
         /**
          * @brief Initializes a new instance of the Modem class.
          * @param port The PTY port for this virtual modem.
+         * @param id Numerical identifier for this virtual modem.
+         * @param ptyPort String for the PTY port for this modem.
          * @param verbose Flag indicating whether air interface modem verbose is enabled.
          * @param debug Flag indicating whether air interface modem debug is enabled.
          */
-        Modem(port::IModemPort* port, bool verbose, bool debug);
+        Modem(port::IModemPort* port, uint8_t id, std::string ptyPort, bool verbose, bool debug);
         /**
          * @brief Finalizes a new instance of the Modem class.
          */
@@ -87,6 +89,7 @@ namespace modem
 
         /**
          * @brief Updates the modem by the passed number of milliseconds.
+         *  NOTE: This shouldn't be called directly, this will be handled by the internal thread.
          * @param ms Number of milliseconds.
          */
         void clock(uint32_t ms);
@@ -143,6 +146,9 @@ namespace modem
         friend class modem::IO;
 
         port::IModemPort* m_port;
+
+        uint8_t m_modemId;
+        std::string m_modemPty;
 
         DVM_STATE m_modemState;
 
@@ -204,6 +210,13 @@ namespace modem
         /* CW */
         friend class modem::CWIdTX;
         CWIdTX m_cwIdTX;
+
+        /**
+         * @brief Entry point to clock thread.
+         * @param arg Instance of the thread_t structure.
+         * @returns void* (Ignore)
+         */
+        static void* threadClock(void* arg);
 
         /**
          * @brief Read samples queued for reception.
