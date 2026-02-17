@@ -241,6 +241,7 @@ namespace modem
         void resetMCU();
 
     private:
+        friend class modem::Modem;
         modem::Modem* m_modem;
 
         bool m_started;

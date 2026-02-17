@@ -566,16 +566,18 @@ void IO::interrupt()
         sample *= 5; // amplify by 12dB
 
         if (m_audioBufTx.size() >= 720) {
-/*
-            zmq::message_t reply = zmq::message_t(720 * sizeof(short));
-            ::memcpy(reply.data(), (unsigned char*)m_audioBufTx.data(), 720 * sizeof(short));
+            /*
+            ** bryanb: because dvmbbsdr currently creates FM modulated stream for now --
+            **  this function is where we would transmit the modulated carrier for a specific modem;
+            **  when this can send modulated I/Q we will likely need to change this
+            ** TODO TODO TODO
+            */
 
-            try
-            {
-                m_zmqSocketTx.send(reply, zmq::send_flags::dontwait);
-            }
-            catch(const zmq::error_t& zmqE) { }
-*/
+            uint8_t sampleBuffer[720 * sizeof(short)];
+            ::memset(sampleBuffer, 0, 720 * sizeof(short));
+            ::memcpy(sampleBuffer, (unsigned char*)m_audioBufTx.data(), 720 * sizeof(short));
+
+            m_modem->transmitFMSamples(sampleBuffer, 720 * sizeof(short));
             ::usleep(9600 * 3);
             
             m_audioBufTx.erase(m_audioBufTx.begin(), m_audioBufTx.begin() + 720);
@@ -876,22 +878,28 @@ void IO::interruptRx()
 {
     uint16_t sample = DC_OFFSET;
     uint8_t control = MARK_NONE;
-/*
-    int size = msg.size();
+
+    /*
+    ** bryanb: because dvmbbsdr currently handles a FM modulated stream for now --
+    **  this function is where we would receive the demodulated carrier for a specific modem
+    ** TODO TODO TODO
+    */
+
+    uint8_t* samples = nullptr;
+    int size = m_modem->readFMSamples(samples);
     if (size < 1)
         return;
-*/
+
     ::pthread_mutex_lock(&m_rxLock);
     uint16_t space = m_rxBuffer.getSpace();
-/*
+
     for (int i = 0; i < size; i += 2) {
         short sample = 0;
-        ::memcpy(&sample, (unsigned char*)msg.data() + i, sizeof(short));
+        ::memcpy(&sample, (uint8_t*)samples + i, sizeof(short));
 
         m_rxBuffer.put((uint16_t)sample, control);
         m_rssiBuffer.put(3U);
     }
-*/
     ::pthread_mutex_unlock(&m_rxLock);
 }
 

@@ -68,6 +68,11 @@ bool Modem::open()
     if (!ret)
         return false;
 
+    /*
+    ** TODO TODO TODO: this should probably be setting up whatever is needed
+    **  on GNU Radio to have carrier frequency running
+    */
+
     return true;
 }
 
@@ -111,6 +116,11 @@ void Modem::clock(uint32_t ms)
 void Modem::close()
 {
     m_port->close();
+
+    /*
+    ** TODO TODO TODO: this should probably be shutdown whatever is needed
+    **  on GNU Radio for a running carrier frequency
+    */
 }
 
 /* */
@@ -153,4 +163,30 @@ void Modem::writeDebug(const char* text, int16_t n1, int16_t n2, int16_t n3, int
 void Modem::writeDump(const uint8_t* data, uint16_t length)
 {
     m_serial.writeDump(data, length);
+}
+
+// ---------------------------------------------------------------------------
+//  Private Class Members
+// ---------------------------------------------------------------------------
+
+/* Read samples queued for reception. */
+
+int Modem::readFMSamples(uint8_t* samples)
+{
+    /*
+    ** TODO TODO TODO -- this should pull demodulated FM samples from some queue for passing to 
+    **  the higher level Rx functions
+    */
+
+    return 0;
+}
+
+/* Helper to handle FM modulated samples. */
+
+void Modem::transmitFMSamples(const uint8_t* samples, size_t length)
+{
+    /*
+    ** TODO TODO TODO -- this is fed samples from the higher level Tx functions
+    **  to be transmitted as modulated FM
+    */
 }

@@ -281,6 +281,7 @@ namespace modem
         virtual void writeDump(const uint8_t* data, uint16_t length);
 
     private:
+        friend class modem::Modem;
         modem::Modem* m_modem;
 
         uint8_t m_buffer[SERIAL_FB_LEN];

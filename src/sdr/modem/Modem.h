@@ -204,6 +204,19 @@ namespace modem
         /* CW */
         friend class modem::CWIdTX;
         CWIdTX m_cwIdTX;
+
+        /**
+         * @brief Read samples queued for reception.
+         * @param samples Buffer to store the received samples.
+         * @return int Number of samples read.
+         */
+        int readFMSamples(uint8_t* samples);
+        /**
+         * @brief Helper to handle transmitting FM modulated samples.
+         * @param samples Buffer containing samples.
+         * @param length Length of buffer.
+         */
+        void transmitFMSamples(const uint8_t* samples, size_t length);
     };
 } // namespace modem
 
