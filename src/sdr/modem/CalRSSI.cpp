@@ -7,9 +7,11 @@
  *  Copyright (C) 2016 Jonathan Naylor, G4KLX
  *
  */
-#include "Globals.h"
 #include "CalRSSI.h"
+#include "modem/Modem.h"
 #include "Utils.h"
+
+using namespace modem;
 
 // ---------------------------------------------------------------------------
 //  Public Class Members
@@ -17,7 +19,8 @@
 
 /* Initializes a new instance of the CalRSSI class. */
 
-CalRSSI::CalRSSI() :
+CalRSSI::CalRSSI(modem::Modem* modem) :
+    m_modem(modem),
     m_count(0U),
     m_accum(0U),
     m_min(0xFFFFU),
@@ -52,7 +55,7 @@ void CalRSSI::samples(const uint16_t* rssi, uint8_t length)
             buffer[4U] = (ave >> 8) & 0xFFU;
             buffer[5U] = (ave >> 0) & 0xFFU;
 
-            serial.writeRSSIData(buffer, 6U);
+            m_modem->m_serial.writeRSSIData(buffer, 6U);
 
             m_count = 0U;
             m_accum = 0U;

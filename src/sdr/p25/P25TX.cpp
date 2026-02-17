@@ -9,9 +9,9 @@
  *  Copyright (C) 2020-2022 Bryan Biedenkapp, N2PLL
  *
  */
-#include "Globals.h"
 #include "p25/P25TX.h"
 #include "p25/P25Defines.h"
+#include "modem/Modem.h"
 
 using namespace p25;
 
@@ -56,7 +56,8 @@ const q15_t P25_LEVELD = -1220;
 
 /* Initializes a new instance of the P25TX class. */
 
-P25TX::P25TX() :
+P25TX::P25TX(modem::Modem* modem) :
+    m_modem(modem),
     m_fifo(P25_TX_BUFFER_LEN),
     m_state(P25TXSTATE_NORMAL),
     m_modFilter(),
@@ -92,7 +93,7 @@ void P25TX::process()
     if (m_fifo.getData() == 0U && m_poLen == 0U && m_tailCnt > 0U &&
         m_state != P25TXSTATE_CAL) {
         // transmit silence until the hang timer has expired
-        uint16_t space = io.getSpace();
+        uint16_t space = m_modem->m_io.getSpace();
 
         while (space > (4U * P25_RADIO_SYMBOL_LENGTH)) {
             writeSilence();
@@ -126,11 +127,11 @@ void P25TX::process()
     }
 
     if (m_poLen > 0U) {
-        if (!m_tx) {
-            io.setTransmit();
+        if (!m_modem->m_tx) {
+            m_modem->m_io.setTransmit();
         }
 
-        uint16_t space = io.getSpace();
+        uint16_t space = m_modem->m_io.getSpace();
 
         while (space > (4U * P25_RADIO_SYMBOL_LENGTH)) {
             uint8_t c = m_poBuffer[m_poPtr++];
@@ -157,7 +158,7 @@ uint8_t P25TX::writeData(const uint8_t* data, uint16_t length)
         return RSN_ILLEGAL_LENGTH;
 
     uint16_t space = m_fifo.getSpace();
-    DEBUG3("P25TX::writeData() dataLength/fifoLength", length, space);
+    m_modem->writeDebug("P25TX::writeData() dataLength/fifoLength", length, space);
     if (space < length) {
         m_fifo.reset();
         return RSN_RINGBUFF_FULL;
@@ -260,7 +261,7 @@ uint8_t P25TX::getSpace() const
 
 void P25TX::createData()
 {
-    if (!m_tx) {
+    if (!m_modem->m_tx) {
         for (uint16_t i = 0U; i < m_preambleCnt; i++)
             m_poBuffer[m_poLen++] = P25_START_SYNC;
     }
@@ -276,7 +277,7 @@ void P25TX::createData()
             break;
         }
 
-        DEBUG3("P25TX::createData() dataLength/fifoSpace", length, m_fifo.getSpace());
+        m_modem->writeDebug("P25TX::createData() dataLength/fifoSpace", length, m_fifo.getSpace());
         for (uint16_t i = 0U; i < length; i++) {
             m_poBuffer[m_poLen++] = m_fifo.get();
         }
@@ -290,7 +291,7 @@ void P25TX::createData()
 void P25TX::createCal()
 {
     // 1.2 kHz sine wave generation
-    if (m_modemState == STATE_P25_CAL) {
+    if (m_modem->m_modemState == STATE_P25_CAL) {
         for (uint8_t i = 0U; i < P25_LDU_FRAME_LENGTH_BYTES; i++) {
             m_poBuffer[i] = P25_START_SYNC;
         }
@@ -333,7 +334,7 @@ void P25TX::writeByte(uint8_t c)
 
     ::arm_fir_fast_q15(&m_lpFilter, intBuffer, outBuffer, P25_RADIO_SYMBOL_LENGTH * 4U);
 
-    io.write(STATE_P25, outBuffer, P25_RADIO_SYMBOL_LENGTH * 4U);
+    m_modem->m_io.write(STATE_P25, outBuffer, P25_RADIO_SYMBOL_LENGTH * 4U);
 }
 
 /* */
@@ -348,5 +349,5 @@ void P25TX::writeSilence()
     
     ::arm_fir_fast_q15(&m_lpFilter, intBuffer, outBuffer, P25_RADIO_SYMBOL_LENGTH * 4U);
     
-    io.write(STATE_P25, outBuffer, P25_RADIO_SYMBOL_LENGTH * 4U);
+    m_modem->m_io.write(STATE_P25, outBuffer, P25_RADIO_SYMBOL_LENGTH * 4U);
 }

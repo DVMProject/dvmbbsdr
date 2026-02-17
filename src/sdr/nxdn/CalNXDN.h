@@ -47,8 +47,9 @@ namespace nxdn
     public:
         /**
          * @brief Initializes a new instance of the CalNXDN class.
+         * @param modem The modem instance.
          */
-        CalNXDN();
+        CalNXDN(modem::Modem* modem);
 
         /**
          * @brief Process local state and transmit on the air interface.
@@ -64,6 +65,8 @@ namespace nxdn
         uint8_t write(const uint8_t* data, uint16_t length);
 
     private:
+        modem::Modem* m_modem;
+
         bool m_transmit;
         NXDNCAL1K m_state;
         

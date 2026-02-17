@@ -9,8 +9,8 @@
  *  Copyright (C) 2018 Andy Uribe, CA6JAU
  *
  */
-#include "Globals.h"
 #include "dmr/CalDMR.h"
+#include "modem/Modem.h"
 
 using namespace dmr;
 
@@ -77,7 +77,8 @@ const uint8_t SHORTLC_1K[] = { 0x33U, 0x3AU, 0xA0U, 0x30U, 0x00U, 0x55U, 0xA6U, 
 
 /* Initializes a new instance of the CalDMR class. */
 
-CalDMR::CalDMR() :
+CalDMR::CalDMR(modem::Modem* modem) :
+    m_modem(modem),
     m_transmit(false),
     m_state(DMRCAL1K_IDLE),
     m_frameStart(0U),
@@ -91,15 +92,15 @@ CalDMR::CalDMR() :
 
 void CalDMR::process()
 {
-    switch (m_modemState) {
+    switch (m_modem->m_modemState) {
     case STATE_DMR_CAL:
     case STATE_DMR_LF_CAL:
         if (m_transmit) {
-            dmrTX.setCal(true);
-            dmrTX.process();
+            m_modem->m_dmrTX.setCal(true);
+            m_modem->m_dmrTX.process();
         }
         else {
-            dmrTX.setCal(false);
+            m_modem->m_dmrTX.setCal(false);
         }
         break;
     case STATE_DMR_CAL_1K:
@@ -143,23 +144,23 @@ void CalDMR::createDataDMO1k(uint8_t n)
 
 void CalDMR::dmr1kcal()
 {
-    dmrTX.process();
+    m_modem->m_dmrTX.process();
 
-    uint16_t space = dmrTX.getSpace2();
+    uint16_t space = m_modem->m_dmrTX.getSpace2();
     if (space < 1U)
         return;
 
     switch (m_state) {
     case DMRCAL1K_VH:
-        dmrTX.setColorCode(1U);
-        dmrTX.writeShortLC(SHORTLC_1K, 9U);
-        dmrTX.writeData2(VH_1K, DMR_FRAME_LENGTH_BYTES + 1U);
-        dmrTX.setStart(true);
+        m_modem->m_dmrTX.setColorCode(1U);
+        m_modem->m_dmrTX.writeShortLC(SHORTLC_1K, 9U);
+        m_modem->m_dmrTX.writeData2(VH_1K, DMR_FRAME_LENGTH_BYTES + 1U);
+        m_modem->m_dmrTX.setStart(true);
         m_state = DMRCAL1K_VOICE;
         break;
     case DMRCAL1K_VOICE:
         createData1k(m_audioSeq);
-        dmrTX.writeData2(m_dmr1k, DMR_FRAME_LENGTH_BYTES + 1U);
+        m_modem->m_dmrTX.writeData2(m_dmr1k, DMR_FRAME_LENGTH_BYTES + 1U);
         if (m_audioSeq == 5U) {
             m_audioSeq = 0U;
             if (!m_transmit)
@@ -169,14 +170,14 @@ void CalDMR::dmr1kcal()
             m_audioSeq++;
         break;
     case DMRCAL1K_VT:
-        dmrTX.writeData2(VT_1K, DMR_FRAME_LENGTH_BYTES + 1U);
-        m_frameStart = dmrTX.getFrameCount();
+        m_modem->m_dmrTX.writeData2(VT_1K, DMR_FRAME_LENGTH_BYTES + 1U);
+        m_frameStart = m_modem->m_dmrTX.getFrameCount();
         m_state = DMRCAL1K_WAIT;
         break;
     case DMRCAL1K_WAIT:
-        if (dmrTX.getFrameCount() > (m_frameStart + 30U)) {
-            dmrTX.setStart(false);
-            dmrTX.resetFifo2();
+        if (m_modem->m_dmrTX.getFrameCount() > (m_frameStart + 30U)) {
+            m_modem->m_dmrTX.setStart(false);
+            m_modem->m_dmrTX.resetFifo2();
             m_audioSeq = 0U;
             m_state = DMRCAL1K_IDLE;
         }
@@ -191,20 +192,20 @@ void CalDMR::dmr1kcal()
 
 void CalDMR::dmrDMO1kcal()
 {
-    dmrDMOTX.process();
+    m_modem->m_dmrDMOTX.process();
 
-    uint16_t space = dmrDMOTX.getSpace();
+    uint16_t space = m_modem->m_dmrDMOTX.getSpace();
     if (space < 1U)
         return;
 
     switch (m_state) {
     case DMRCAL1K_VH:
-        dmrDMOTX.writeData(VH_DMO1K, DMR_FRAME_LENGTH_BYTES + 1U);
+        m_modem->m_dmrDMOTX.writeData(VH_DMO1K, DMR_FRAME_LENGTH_BYTES + 1U);
         m_state = DMRCAL1K_VOICE;
         break;
     case DMRCAL1K_VOICE:
         createDataDMO1k(m_audioSeq);
-        dmrDMOTX.writeData(m_dmr1k, DMR_FRAME_LENGTH_BYTES + 1U);
+        m_modem->m_dmrDMOTX.writeData(m_dmr1k, DMR_FRAME_LENGTH_BYTES + 1U);
         if (m_audioSeq == 5U) {
             m_audioSeq = 0U;
             if (!m_transmit)
@@ -214,7 +215,7 @@ void CalDMR::dmrDMO1kcal()
             m_audioSeq++;
         break;
     case DMRCAL1K_VT:
-        dmrDMOTX.writeData(VT_DMO1K, DMR_FRAME_LENGTH_BYTES + 1U);
+        m_modem->m_dmrDMOTX.writeData(VT_DMO1K, DMR_FRAME_LENGTH_BYTES + 1U);
         m_state = DMRCAL1K_IDLE;
         break;
     default:
@@ -233,7 +234,7 @@ uint8_t CalDMR::write(const uint8_t* data, uint8_t length)
 
     m_transmit = data[0U] == 1U;
 
-    if (m_transmit && m_state == DMRCAL1K_IDLE && (m_modemState == STATE_DMR_CAL_1K || m_modemState == STATE_DMR_DMO_CAL_1K))
+    if (m_transmit && m_state == DMRCAL1K_IDLE && (m_modem->m_modemState == STATE_DMR_CAL_1K || m_modem->m_modemState == STATE_DMR_DMO_CAL_1K))
         m_state = DMRCAL1K_VH;
 
     return RSN_OK;

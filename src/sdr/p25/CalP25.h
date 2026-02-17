@@ -47,8 +47,9 @@ namespace p25
     public:
         /**
          * @brief Initializes a new instance of the CalP25 class.
+         * @param modem The modem instance.
          */
-        CalP25();
+        CalP25(modem::Modem* modem);
 
         /**
          * @brief Process local state and transmit on the air interface.
@@ -64,6 +65,8 @@ namespace p25
         uint8_t write(const uint8_t* data, uint8_t length);
 
     private:
+        modem::Modem* m_modem;
+
         bool m_transmit;
         P25CAL1K m_state;
     };

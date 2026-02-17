@@ -7,8 +7,8 @@
  *  Copyright (C) 2009-2018,2020 Jonathan Naylor, G4KLX
  *
  */
-#include "Globals.h"
 #include "nxdn/NXDNRX.h"
+#include "modem/Modem.h"
 #include "Utils.h"
 
 using namespace nxdn;
@@ -37,7 +37,8 @@ const uint16_t NOENDPTR = 9999U;
 
 /* Initializes a new instance of the NXDNRX class. */
 
-NXDNRX::NXDNRX() :
+NXDNRX::NXDNRX(modem::Modem* modem) :
+    m_modem(modem),
     m_bitBuffer(),
     m_buffer(),
     m_bitPtr(0U),
@@ -148,12 +149,12 @@ void NXDNRX::processSample(q15_t sample)
             m_rssiAccum = 0U;
             m_rssiCount = 0U;
 
-            io.setDecode(true);
-            io.setADCDetection(true);
+            m_modem->m_io.setDecode(true);
+            m_modem->m_io.setADCDetection(true);
 
             m_averagePtr = NOAVEPTR;
             m_countdown = m_corrCountdown;
-            DEBUG2("NXDNRX::processSample() correlation countdown", m_countdown);
+            m_modem->writeDebug("NXDNRX::processSample() correlation countdown", m_countdown);
         }
     }
 
@@ -200,7 +201,7 @@ void NXDNRX::processData(q15_t sample)
 
         calculateLevels(m_startPtr, NXDN_FRAME_LENGTH_SYMBOLS);
 
-        DEBUG4("NXDNRX::processData() sync found pos/centre/threshold", m_fswPtr, m_centreVal, m_thresholdVal);
+        m_modem->writeDebug("NXDNRX::processData() sync found pos/centre/threshold", m_fswPtr, m_centreVal, m_thresholdVal);
 
         uint8_t frame[NXDN_FRAME_LENGTH_BYTES + 3U];
         samplesToBits(m_startPtr, NXDN_FRAME_LENGTH_SYMBOLS, frame, 8U, m_centreVal, m_thresholdVal);
@@ -208,12 +209,12 @@ void NXDNRX::processData(q15_t sample)
         // We've not seen a data sync for too long, signal RXLOST and change to RX_NONE
         m_lostCount--;
         if (m_lostCount == 0U) {
-            DEBUG1("NXDNRX::processData() sync timed out, lost lock");
+            m_modem->writeDebug("NXDNRX::processData() sync timed out, lost lock");
 
-            io.setDecode(false);
-            io.setADCDetection(false);
+            m_modem->m_io.setDecode(false);
+            m_modem->m_io.setADCDetection(false);
 
-            serial.writeNXDNLost();
+            m_modem->m_serial.writeNXDNLost();
 
             m_state = NXDNRXS_NONE;
             m_endPtr = NOENDPTR;
@@ -230,12 +231,12 @@ void NXDNRX::processData(q15_t sample)
                 frame[49U] = (rssi >> 8) & 0xFFU;
                 frame[50U] = (rssi >> 0) & 0xFFU;
 
-                serial.writeNXDNData(frame, NXDN_FRAME_LENGTH_BYTES + 3U);
+                m_modem->m_serial.writeNXDNData(frame, NXDN_FRAME_LENGTH_BYTES + 3U);
             } else {
-                serial.writeNXDNData(frame, NXDN_FRAME_LENGTH_BYTES + 1U);
+                m_modem->m_serial.writeNXDNData(frame, NXDN_FRAME_LENGTH_BYTES + 1U);
             }
 #else
-            serial.writeNXDNData(frame, NXDN_FRAME_LENGTH_BYTES + 1U);
+            m_modem->m_serial.writeNXDNData(frame, NXDN_FRAME_LENGTH_BYTES + 1U);
 #endif
 
             m_rssiAccum = 0U;
@@ -313,9 +314,9 @@ bool NXDNRX::correlateSync()
                 errs += countBits8((sync[i] & NXDN_FSW_BYTES_MASK[i]) ^ NXDN_FSW_BYTES[i]);
 
             if (errs <= maxErrs) {
-                DEBUG2("NXDNRX::correlateSync() sync errs", errs);
+                m_modem->writeDebug("NXDNRX::correlateSync() sync errs", errs);
 
-                DEBUG4("NXDNRX::correlateSync() sync [b0 - b2]", sync[0], sync[1], sync[2]);
+                m_modem->writeDebug("NXDNRX::correlateSync() sync [b0 - b2]", sync[0], sync[1], sync[2]);
 
                 m_maxCorr = corr;
                 m_lostCount = MAX_FSW_FRAMES;
@@ -327,7 +328,7 @@ bool NXDNRX::correlateSync()
                 if (m_endPtr >= NXDN_FRAME_LENGTH_SAMPLES)
                     m_endPtr -= NXDN_FRAME_LENGTH_SAMPLES;
 
-                DEBUG4("NXDNRX::correlateSync() dataPtr/startPtr/endPtr", m_dataPtr, startPtr, m_endPtr);
+                m_modem->writeDebug("NXDNRX::correlateSync() dataPtr/startPtr/endPtr", m_dataPtr, startPtr, m_endPtr);
 
                 return true;
             }
@@ -373,7 +374,7 @@ void NXDNRX::calculateLevels(uint16_t start, uint16_t count)
 
     q15_t threshold = posThresh - centre;
 
-    DEBUG5("NXDNRX::calculateLevels() pos/neg/centre/threshold", posThresh, negThresh, centre, threshold);
+    m_modem->writeDebug("NXDNRX::calculateLevels() pos/neg/centre/threshold", posThresh, negThresh, centre, threshold);
 
     if (m_averagePtr == NOAVEPTR) {
         for (uint8_t i = 0U; i < 16U; i++) {

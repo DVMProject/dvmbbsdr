@@ -33,8 +33,9 @@ namespace dmr
     public:
         /**
          * @brief Initializes a new instance of the DMRIdleRX class.
+         * @param modem The modem instance.
          */
-        DMRIdleRX();
+        DMRIdleRX(modem::Modem* modem);
 
         /**
          * @brief Helper to reset data values to defaults.
@@ -55,6 +56,8 @@ namespace dmr
         void setColorCode(uint8_t colorCode);
 
     private:
+        modem::Modem* m_modem;
+
         uint32_t m_bitBuffer[DMR_RADIO_SYMBOL_LENGTH];
         q15_t m_buffer[DMR_FRAME_LENGTH_SAMPLES];
         uint16_t m_bitPtr;

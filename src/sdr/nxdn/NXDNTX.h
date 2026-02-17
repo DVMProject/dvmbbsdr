@@ -49,8 +49,9 @@ namespace nxdn
     public:
         /**
          * @brief Initializes a new instance of the NXDNTX class.
+         * @param modem The modem instance.
          */
-        NXDNTX();
+        NXDNTX(modem::Modem* modem);
 
         /**
          * @brief Process local buffer and transmit on the air interface.
@@ -105,6 +106,7 @@ namespace nxdn
         uint8_t getSpace() const;
 
     private:
+        modem::Modem* m_modem;
         modem::SerialBuffer m_fifo;
 
         NXDNTXSTATE m_state;

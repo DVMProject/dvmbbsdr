@@ -9,9 +9,9 @@
  *  Copyright (C) 2017-2024 Bryan Biedenkapp, N2PLL
  *
  */
-#include "Globals.h"
 #include "modem/SerialPort.h"
 #include "modem/port/UARTPort.h"
+#include "modem/Modem.h"
 #include "common/Log.h"
 #include "common/Utils.h"
 
@@ -27,12 +27,19 @@ const char HARDWARE[] = concat(DESCRIPTION, __TIME__, __DATE__);
 const uint8_t PROTOCOL_VERSION = 4U;
 
 // ---------------------------------------------------------------------------
+//  Globals Variables
+// ---------------------------------------------------------------------------
+
+static uint8_t s_readBuffer = 0x00U;
+
+// ---------------------------------------------------------------------------
 //  Public Class Members
 // ---------------------------------------------------------------------------
 
 /* Initializes a new instance of the SerialPort class. */
 
-SerialPort::SerialPort() :
+SerialPort::SerialPort(modem::Modem* modem) :
+    m_modem(modem),
     m_buffer(),
     m_ptr(0U),
     m_len(0U),
@@ -164,18 +171,18 @@ void SerialPort::process()
                     break;
 
                 case CMD_CAL_DATA:
-                    if (m_modemState == STATE_DMR_DMO_CAL_1K || m_modemState == STATE_DMR_CAL_1K ||
-                        m_modemState == STATE_DMR_LF_CAL || m_modemState == STATE_DMR_CAL)
-                        err = calDMR.write(m_buffer + 3U, m_len - 3U);
-                    if (m_modemState == STATE_P25_CAL_1K || m_modemState == STATE_P25_CAL)
-                        err = calP25.write(m_buffer + 3U, m_len - 3U);
-                    if (m_modemState == STATE_NXDN_CAL)
-                        err = calNXDN.write(m_buffer + 3U, m_len - 3U);
+                    if (m_modem->m_modemState == STATE_DMR_DMO_CAL_1K || m_modem->m_modemState == STATE_DMR_CAL_1K ||
+                        m_modem->m_modemState == STATE_DMR_LF_CAL || m_modem->m_modemState == STATE_DMR_CAL)
+                        err = m_modem->m_calDMR.write(m_buffer + 3U, m_len - 3U);
+                    if (m_modem->m_modemState == STATE_P25_CAL_1K || m_modem->m_modemState == STATE_P25_CAL)
+                        err = m_modem->m_calP25.write(m_buffer + 3U, m_len - 3U);
+                    if (m_modem->m_modemState == STATE_NXDN_CAL)
+                        err = m_modem->m_calNXDN.write(m_buffer + 3U, m_len - 3U);
                     if (err == RSN_OK) {
                         sendACK();
                     }
                     else {
-                        DEBUG2("SerialPort::process() received invalid calibration data", err);
+                        m_modem->writeDebug("SerialPort::process() received invalid calibration data", err);
                         sendNAK(err);
                     }
                     break;
@@ -190,13 +197,13 @@ void SerialPort::process()
                         sendACK();
                     }
                     else {
-                        DEBUG2("SerialPort::process() received invalid data to write to flash", err);
+                        m_modem->writeDebug("SerialPort::process() received invalid data to write to flash", err);
                         sendNAK(err);
                     }
                     break;
 
                 case CMD_RESET_MCU:
-                    io.resetMCU();
+                    m_modem->m_io.resetMCU();
                     break;
 
                 case CMD_SET_BUFFERS:
@@ -205,7 +212,7 @@ void SerialPort::process()
                         sendACK();
                     }
                     else {
-                        DEBUG2("SerialPort::process() received invalid data to set buffers", err);
+                        m_modem->writeDebug("SerialPort::process() received invalid data to set buffers", err);
                         sendNAK(err);
                     }
                     break;
@@ -213,164 +220,164 @@ void SerialPort::process()
                 /** CW */
                 case CMD_SEND_CWID:
                     err = RSN_RINGBUFF_FULL;
-                    if (m_modemState == STATE_IDLE)
-                        err = cwIdTX.write(m_buffer + 3U, m_len - 3U);
+                    if (m_modem->m_modemState == STATE_IDLE)
+                        err = m_modem->m_cwIdTX.write(m_buffer + 3U, m_len - 3U);
                     if (err != RSN_OK) {
-                        DEBUG2("SerialPort::process() invalid CW Id data", err);
+                        m_modem->writeDebug("SerialPort::process() invalid CW Id data", err);
                         sendNAK(err);
                     }
                     break;
 
                 /** Digital Mobile Radio */
                 case CMD_DMR_DATA1:
-                    if (m_dmrEnable) {
-                        if (m_modemState == STATE_IDLE || m_modemState == STATE_DMR) {
-                            if (m_duplex)
-                                err = dmrTX.writeData1(m_buffer + 3U, m_len - 3U);
+                    if (m_modem->m_dmrEnable) {
+                        if (m_modem->m_modemState == STATE_IDLE || m_modem->m_modemState == STATE_DMR) {
+                            if (m_modem->m_duplex)
+                                err = m_modem->m_dmrTX.writeData1(m_buffer + 3U, m_len - 3U);
                         }
                     }
                     if (err == RSN_OK) {
-                        if (m_modemState == STATE_IDLE)
+                        if (m_modem->m_modemState == STATE_IDLE)
                             setMode(STATE_DMR);
                     }
                     else {
-                        DEBUG2("SerialPort: process() received invalid DMR data", err);
+                        m_modem->writeDebug("SerialPort: process() received invalid DMR data", err);
                         sendNAK(err);
                     }
                     break;
 
                 case CMD_DMR_DATA2:
-                    if (m_dmrEnable) {
-                        if (m_modemState == STATE_IDLE || m_modemState == STATE_DMR) {
-                            if (m_duplex)
-                                err = dmrTX.writeData2(m_buffer + 3U, m_len - 3U);
+                    if (m_modem->m_dmrEnable) {
+                        if (m_modem->m_modemState == STATE_IDLE || m_modem->m_modemState == STATE_DMR) {
+                            if (m_modem->m_duplex)
+                                err = m_modem->m_dmrTX.writeData2(m_buffer + 3U, m_len - 3U);
                             else
-                                err = dmrDMOTX.writeData(m_buffer + 3U, m_len - 3U);
+                                err = m_modem->m_dmrDMOTX.writeData(m_buffer + 3U, m_len - 3U);
                         }
                     }
                     if (err == RSN_OK) {
-                        if (m_modemState == STATE_IDLE)
+                        if (m_modem->m_modemState == STATE_IDLE)
                             setMode(STATE_DMR);
                     }
                     else {
-                        DEBUG2("SerialPort::process() received invalid DMR data", err);
+                        m_modem->writeDebug("SerialPort::process() received invalid DMR data", err);
                         sendNAK(err);
                     }
                     break;
 
                 case CMD_DMR_START:
-                    if (m_dmrEnable) {
+                    if (m_modem->m_dmrEnable) {
                         err = RSN_INVALID_DMR_START;
                         if (m_len == 4U) {
-                            if (m_buffer[3U] == 0x01U && m_modemState == STATE_DMR) {
-                                if (!m_tx)
-                                    dmrTX.setStart(true);
+                            if (m_buffer[3U] == 0x01U && m_modem->m_modemState == STATE_DMR) {
+                                if (!m_modem->m_tx)
+                                    m_modem->m_dmrTX.setStart(true);
                                 err = RSN_OK;
                             }
-                            else if (m_buffer[3U] == 0x00U && m_modemState == STATE_DMR) {
-                                if (m_tx)
-                                    dmrTX.setStart(false);
+                            else if (m_buffer[3U] == 0x00U && m_modem->m_modemState == STATE_DMR) {
+                                if (m_modem->m_tx)
+                                    m_modem->m_dmrTX.setStart(false);
                                 err = RSN_OK;
                             }
                         }
                     }
                     if (err != RSN_OK) {
-                        DEBUG3("SerialPort::process() received invalid DMR start", err, m_len);
+                        m_modem->writeDebug("SerialPort::process() received invalid DMR start", err);
                         sendNAK(err);
                     }
                     break;
 
                 case CMD_DMR_SHORTLC:
-                    if (m_dmrEnable)
-                        err = dmrTX.writeShortLC(m_buffer + 3U, m_len - 3U);
+                    if (m_modem->m_dmrEnable)
+                        err = m_modem->m_dmrTX.writeShortLC(m_buffer + 3U, m_len - 3U);
                     if (err != RSN_OK) {
-                        DEBUG2("SerialPort::process() received invalid DMR Short LC", err);
+                        m_modem->writeDebug("SerialPort::process() received invalid DMR Short LC", err);
                         sendNAK(err);
                     }
                     break;
 
                 case CMD_DMR_ABORT:
-                    if (m_dmrEnable)
-                        err = dmrTX.writeAbort(m_buffer + 3U, m_len - 3U);
+                    if (m_modem->m_dmrEnable)
+                        err = m_modem->m_dmrTX.writeAbort(m_buffer + 3U, m_len - 3U);
                     if (err != RSN_OK) {
-                        DEBUG2("SerialPort::process() received invalid DMR Abort", err);
+                        m_modem->writeDebug("SerialPort::process() received invalid DMR Abort", err);
                         sendNAK(err);
                     }
                     break;
 
                 case CMD_DMR_CACH_AT_CTRL:
-                    if (m_dmrEnable) {
+                    if (m_modem->m_dmrEnable) {
                         err = RSN_INVALID_REQUEST;
                         if (m_len == 4U) {
-                            dmrTX.setIgnoreCACH_AT(m_buffer[3U]);
+                            m_modem->m_dmrTX.setIgnoreCACH_AT(m_buffer[3U]);
                             err = RSN_OK;
                         }
                     }
                     if (err != RSN_OK) {
-                        DEBUG2("SerialPort::process() received invalid DMR CACH AT Control", err);
+                        m_modem->writeDebug("SerialPort::process() received invalid DMR CACH AT Control", err);
                         sendNAK(err);
                     }
                     break;
 
                 case CMD_DMR_CLEAR1:
-                    if (m_dmrEnable) {
-                        if (m_modemState == STATE_IDLE || m_modemState == STATE_P25)
-                            dmrTX.resetFifo1();
+                    if (m_modem->m_dmrEnable) {
+                        if (m_modem->m_modemState == STATE_IDLE || m_modem->m_modemState == STATE_P25)
+                            m_modem->m_dmrTX.resetFifo1();
                     }
                     break;
                 case CMD_DMR_CLEAR2:
-                    if (m_dmrEnable) {
-                        if (m_modemState == STATE_IDLE || m_modemState == STATE_P25)
-                            dmrTX.resetFifo2();
+                    if (m_modem->m_dmrEnable) {
+                        if (m_modem->m_modemState == STATE_IDLE || m_modem->m_modemState == STATE_P25)
+                            m_modem->m_dmrTX.resetFifo2();
                     }
                     break;
 
                 /** Project 25 */
                 case CMD_P25_DATA:
-                    if (m_p25Enable) {
-                        if (m_modemState == STATE_IDLE || m_modemState == STATE_P25) {
+                    if (m_modem->m_p25Enable) {
+                        if (m_modem->m_modemState == STATE_IDLE || m_modem->m_modemState == STATE_P25) {
                             if (m_dblFrame)
-                                err = p25TX.writeData(m_buffer + 4U, m_len - 4U);
+                                m_modem->m_p25TX.writeData(m_buffer + 4U, m_len - 4U);
                             else
-                                err = p25TX.writeData(m_buffer + 3U, m_len - 3U);
+                                err = m_modem->m_p25TX.writeData(m_buffer + 3U, m_len - 3U);
                         }
                     }
                     if (err == RSN_OK) {
-                        if (m_modemState == STATE_IDLE)
+                        if (m_modem->m_modemState == STATE_IDLE)
                             setMode(STATE_P25);
                     }
                     else {
-                        DEBUG2("SerialPort::process() received invalid P25 data", err);
+                        m_modem->writeDebug("SerialPort::process() received invalid P25 data", err);
                         sendNAK(err);
                     }
                     break;
 
                 case CMD_P25_CLEAR:
-                    if (m_p25Enable) {
-                        if (m_modemState == STATE_IDLE || m_modemState == STATE_P25)
-                            p25TX.clear();
+                    if (m_modem->m_p25Enable) {
+                        if (m_modem->m_modemState == STATE_IDLE || m_modem->m_modemState == STATE_P25)
+                            m_modem->m_p25TX.clear();
                     }
                     break;
 
                 /** Next Generation Digital Narrowband */
                 case CMD_NXDN_DATA:
-                    if (m_nxdnEnable) {
-                        if (m_modemState == STATE_IDLE || m_modemState == STATE_NXDN)
-                            err = nxdnTX.writeData(m_buffer + 3U, m_len - 3U);
+                    if (m_modem->m_nxdnEnable) {
+                        if (m_modem->m_modemState == STATE_IDLE || m_modem->m_modemState == STATE_NXDN)
+                            err = m_modem->m_nxdnTX.writeData(m_buffer + 3U, m_len - 3U);
                     }
                     if (err == RSN_OK) {
-                        if (m_modemState == STATE_IDLE)
+                        if (m_modem->m_modemState == STATE_IDLE)
                             setMode(STATE_NXDN);
                     }
                     else {
-                        DEBUG2("SerialPort::process() received invalid NXDN data", err);
+                        m_modem->writeDebug("SerialPort::process() received invalid NXDN data", err);
                         sendNAK(err);
                     }
                     break;
                 case CMD_NXDN_CLEAR:
-                    if (m_nxdnEnable) {
-                        if (m_modemState == STATE_IDLE || m_modemState == STATE_P25)
-                            nxdnTX.clear();
+                    if (m_modem->m_nxdnEnable) {
+                        if (m_modem->m_modemState == STATE_IDLE || m_modem->m_modemState == STATE_P25)
+                            m_modem->m_nxdnTX.clear();
                     }
                     break;
 
@@ -387,7 +394,7 @@ void SerialPort::process()
         }
     }
 
-    if (io.getWatchdog() >= 48000U) {
+    if (m_modem->m_io.getWatchdog() >= 48000U) {
         m_ptr = 0U;
         m_len = 0U;
         m_dblFrame = false;
@@ -434,10 +441,10 @@ DVM_STATE SerialPort::calRelativeState(DVM_STATE state)
 
 void SerialPort::writeDMRData(bool slot, const uint8_t* data, uint8_t length)
 {
-    if (m_modemState != STATE_DMR && m_modemState != STATE_IDLE)
+    if (m_modem->m_modemState != STATE_DMR && m_modem->m_modemState != STATE_IDLE)
         return;
 
-    if (!m_dmrEnable)
+    if (!m_modem->m_dmrEnable)
         return;
 
     if (length + 3U > 40U) {
@@ -462,10 +469,10 @@ void SerialPort::writeDMRData(bool slot, const uint8_t* data, uint8_t length)
 
 void SerialPort::writeDMRLost(bool slot)
 {
-    if (m_modemState != STATE_DMR && m_modemState != STATE_IDLE)
+    if (m_modem->m_modemState != STATE_DMR && m_modem->m_modemState != STATE_IDLE)
         return;
 
-    if (!m_dmrEnable)
+    if (!m_modem->m_dmrEnable)
         return;
 
     uint8_t reply[3U];
@@ -481,10 +488,10 @@ void SerialPort::writeDMRLost(bool slot)
 
 void SerialPort::writeP25Data(const uint8_t* data, uint16_t length)
 {
-    if (m_modemState != STATE_P25 && m_modemState != STATE_IDLE)
+    if (m_modem->m_modemState != STATE_P25 && m_modem->m_modemState != STATE_IDLE)
         return;
 
-    if (!m_p25Enable)
+    if (!m_modem->m_p25Enable)
         return;
 
     if (length + 4U > 520U) {
@@ -520,10 +527,10 @@ void SerialPort::writeP25Data(const uint8_t* data, uint16_t length)
 
 void SerialPort::writeP25Lost()
 {
-    if (m_modemState != STATE_P25 && m_modemState != STATE_IDLE)
+    if (m_modem->m_modemState != STATE_P25 && m_modem->m_modemState != STATE_IDLE)
         return;
 
-    if (!m_p25Enable)
+    if (!m_modem->m_p25Enable)
         return;
 
     uint8_t reply[3U];
@@ -539,10 +546,10 @@ void SerialPort::writeP25Lost()
 
 void SerialPort::writeNXDNData(const uint8_t* data, uint8_t length)
 {
-    if (m_modemState != STATE_NXDN && m_modemState != STATE_IDLE)
+    if (m_modem->m_modemState != STATE_NXDN && m_modem->m_modemState != STATE_IDLE)
         return;
 
-    if (!m_nxdnEnable)
+    if (!m_modem->m_nxdnEnable)
         return;
 
     if (length + 3U > 130U) {
@@ -567,10 +574,10 @@ void SerialPort::writeNXDNData(const uint8_t* data, uint8_t length)
 
 void SerialPort::writeNXDNLost()
 {
-    if (m_modemState != STATE_NXDN && m_modemState != STATE_IDLE)
+    if (m_modem->m_modemState != STATE_NXDN && m_modem->m_modemState != STATE_IDLE)
         return;
 
-    if (!m_nxdnEnable)
+    if (!m_modem->m_nxdnEnable)
         return;
 
     uint8_t reply[3U];
@@ -608,7 +615,7 @@ void SerialPort::writeCalData(const uint8_t* data, uint8_t length)
 
 void SerialPort::writeRSSIData(const uint8_t* data, uint8_t length)
 {
-    if (m_modemState != STATE_RSSI_CAL)
+    if (m_modem->m_modemState != STATE_RSSI_CAL)
         return;
 
     if (length + 3U > 130U) {
@@ -636,7 +643,7 @@ void SerialPort::writeDebug(const char* text)
     if (!m_debug)
         return;
 
-    if (g_debug)
+    if (m_modem->m_debug)
         ::LogDebug("DSP_FW_API %s", text);
 
     uint8_t reply[130U];
@@ -662,7 +669,7 @@ void SerialPort::writeDebug(const char* text, int16_t n1)
     if (!m_debug)
         return;
 
-        if (g_debug)
+    if (m_modem->m_debug)
         ::LogDebug("DSP_FW_API %s %X", text, n1);
 
     uint8_t reply[130U];
@@ -691,7 +698,7 @@ void SerialPort::writeDebug(const char* text, int16_t n1, int16_t n2)
     if (!m_debug)
         return;
 
-    if (g_debug)
+    if (m_modem->m_debug)
         ::LogDebug("DSP_FW_API %s %X %X", text, n1, n2);
 
     uint8_t reply[130U];
@@ -723,7 +730,7 @@ void SerialPort::writeDebug(const char* text, int16_t n1, int16_t n2, int16_t n3
     if (!m_debug)
         return;
 
-    if (g_debug)
+    if (m_modem->m_debug)
         ::LogDebug("DSP_FW_API %s %X %X %X", text, n1, n2, n3);
 
     uint8_t reply[130U];
@@ -758,7 +765,7 @@ void SerialPort::writeDebug(const char* text, int16_t n1, int16_t n2, int16_t n3
     if (!m_debug)
         return;
 
-    if (g_debug)
+    if (m_modem->m_debug)
         ::LogDebug("DSP_FW_API %s %X %X %X %X", text, n1, n2, n3, n4);
 
     uint8_t reply[130U];
@@ -796,7 +803,7 @@ void SerialPort::writeDump(const uint8_t* data, uint16_t length)
     if (!m_debug)
         return;
 
-    if (g_debug)
+    if (m_modem->m_debug)
         Utils::dump(1U, "DSP_FW_API Dump", data, length);
 
     if (length + 4U > 516U) {
@@ -868,7 +875,7 @@ void SerialPort::sendNAK(uint8_t err)
 
 void SerialPort::getStatus()
 {
-    io.resetWatchdog();
+    m_modem->m_io.resetWatchdog();
 
     uint8_t reply[15U];
 
@@ -878,48 +885,48 @@ void SerialPort::getStatus()
     reply[2U] = CMD_GET_STATUS;
 
     reply[3U] = 0x00U;
-    if (m_dmrEnable)
+    if (m_modem->m_dmrEnable)
         reply[3U] |= 0x02U;
-    if (m_p25Enable)
+    if (m_modem->m_p25Enable)
         reply[3U] |= 0x08U;
-    if (m_nxdnEnable)
+    if (m_modem->m_nxdnEnable)
         reply[3U] |= 0x10U;
 
-    reply[4U] = uint8_t(m_modemState);
+    reply[4U] = uint8_t(m_modem->m_modemState);
 
-    reply[5U] = m_tx ? 0x01U : 0x00U;
+    reply[5U] = m_modem->m_tx ? 0x01U : 0x00U;
 
     bool adcOverflow;
     bool dacOverflow;
-    io.getOverflow(adcOverflow, dacOverflow);
+    m_modem->m_io.getOverflow(adcOverflow, dacOverflow);
 
     if (adcOverflow)
         reply[5U] |= 0x02U;
 
-    if (io.hasRXOverflow())
+    if (m_modem->m_io.hasRXOverflow())
         reply[5U] |= 0x04U;
 
-    if (io.hasTXOverflow())
+    if (m_modem->m_io.hasTXOverflow())
         reply[5U] |= 0x08U;
 
-    if (io.hasLockout())
+    if (m_modem->m_io.hasLockout())
         reply[5U] |= 0x10U;
 
     if (dacOverflow)
         reply[5U] |= 0x20U;
 
-    reply[5U] |= m_dcd ? 0x40U : 0x00U;
+    reply[5U] |= m_modem->m_dcd ? 0x40U : 0x00U;
 
     reply[6U] = 0U;
 
-    if (m_dmrEnable) {
-        if (m_duplex) {
-            reply[7U] = dmrTX.getSpace1();
-            reply[8U] = dmrTX.getSpace2();
+    if (m_modem->m_dmrEnable) {
+        if (m_modem->m_duplex) {
+            reply[7U] = m_modem->m_dmrTX.getSpace1();
+            reply[8U] = m_modem->m_dmrTX.getSpace2();
         }
         else {
             reply[7U] = 10U;
-            reply[8U] = dmrDMOTX.getSpace();
+            reply[8U] = m_modem->m_dmrDMOTX.getSpace();
         }
     }
     else {
@@ -929,13 +936,13 @@ void SerialPort::getStatus()
 
     reply[9U] = 0U;
 
-    if (m_p25Enable)
-        reply[10U] = p25TX.getSpace();
+    if (m_modem->m_p25Enable)
+        reply[10U] = m_modem->m_p25TX.getSpace();
     else
         reply[10U] = 0U;
 
-    if (m_nxdnEnable)
-        reply[11U] = nxdnTX.getSpace();
+    if (m_modem->m_nxdnEnable)
+        reply[11U] = m_modem->m_nxdnTX.getSpace();
     else
         reply[11U] = 0U;
 
@@ -954,11 +961,11 @@ void SerialPort::getVersion()
 
     reply[3U] = PROTOCOL_VERSION;
 
-    reply[4U] = io.getCPU();
+    reply[4U] = m_modem->m_io.getCPU();
 
     // Reserve 16 bytes for the UDID
     ::memset(reply + 5U, 0x00U, 16U);
-    io.getUDID(reply + 5U);
+    m_modem->m_io.getUDID(reply + 5U);
 
     uint8_t count = 21U;
     for (uint8_t i = 0U; HARDWARE[i] != 0x00U; i++, count++)
@@ -1009,6 +1016,7 @@ uint8_t SerialPort::setConfig(const uint8_t* data, uint8_t length)
     bool simplex = (data[0U] & 0x80U) == 0x80U;
 
     m_debug = (data[0U] & 0x10U) == 0x10U;
+    m_modem->m_debug = m_debug; // should we be doing this?
 
     bool dcBlockerEnable = (data[1U] & 0x01U) == 0x01U;
     bool cosLockoutEnable = (data[1U] & 0x04U) == 0x04U;
@@ -1053,51 +1061,36 @@ uint8_t SerialPort::setConfig(const uint8_t* data, uint8_t length)
 
     //uint8_t nxdnCorrCount = data[22U];
 
-    m_modemState = modemState;
+    m_modem->m_modemState = modemState;
 
-    m_dcBlockerEnable = dcBlockerEnable;
-    m_cosLockoutEnable = cosLockoutEnable;
+    m_modem->m_dcBlockerEnable = dcBlockerEnable;
+    m_modem->m_cosLockoutEnable = cosLockoutEnable;
 
-    m_dmrEnable = dmrEnable;
-    m_p25Enable = p25Enable;
-    m_nxdnEnable = nxdnEnable;
-    m_duplex = !simplex;
+    m_modem->m_dmrEnable = dmrEnable;
+    m_modem->m_p25Enable = p25Enable;
+    m_modem->m_nxdnEnable = nxdnEnable;
+    m_modem->m_duplex = !simplex;
 
-    p25TX.setPreambleCount(fdmaPreamble);
-    dmrDMOTX.setPreambleCount(fdmaPreamble);
-    //nxdnTX.setPreambleCount(fdmaPreamble);
+    m_modem->m_p25TX.setPreambleCount(fdmaPreamble);
+    m_modem->m_dmrDMOTX.setPreambleCount(fdmaPreamble);
+    //m_modem->m_nxdnTX.setPreambleCount(fdmaPreamble);
 
-    p25RX.setNAC(nac);
-    p25RX.setCorrCount(p25CorrCount);
+    m_modem->m_p25RX.setNAC(nac);
+    m_modem->m_p25RX.setCorrCount(p25CorrCount);
 
-    dmrTX.setColorCode(colorCode);
-    dmrRX.setColorCode(colorCode);
-    dmrRX.setRxDelay(dmrRxDelay);
-    dmrDMORX.setColorCode(colorCode);
-    dmrIdleRX.setColorCode(colorCode);
+    m_modem->m_dmrTX.setColorCode(colorCode);
+    m_modem->m_dmrRX.setColorCode(colorCode);
+    m_modem->m_dmrRX.setRxDelay(dmrRxDelay);
+    m_modem->m_dmrDMORX.setColorCode(colorCode);
+    m_modem->m_dmrIdleRX.setColorCode(colorCode);
 
-    //nxdnRX.setCorrCount(nxdnCorrCount);
+    //m_modem->m_nxdnRX.setCorrCount(nxdnCorrCount);
 
-#if defined(DIGIPOT_ENABLED)
-    uint8_t rxCoarse = data[16U];
-    uint8_t rxFine = data[17U];
+    m_modem->m_io.setParameters(rxInvert, txInvert, pttInvert, rxLevel, cwIdTXLevel, dmrTXLevel, p25TXLevel, nxdnTXLevel, txDCOffset, rxDCOffset);
 
-    uint8_t txCoarse = data[18U];
-    uint8_t txFine = data[19U];
+    setMode(m_modem->m_modemState);
 
-    uint8_t rssiCoarse = data[20U];
-    uint8_t rssiFine = data[21U];
-
-    io.SetTxDigipot(txCoarse);
-    io.SetRxDigipot(rxCoarse);
-    io.SetRsDigipot(rssiCoarse);
-#endif
-
-    io.setParameters(rxInvert, txInvert, pttInvert, rxLevel, cwIdTXLevel, dmrTXLevel, p25TXLevel, nxdnTXLevel, txDCOffset, rxDCOffset);
-
-    setMode(m_modemState);
-
-    io.start();
+    m_modem->m_io.start();
 
     return RSN_OK;
 }
@@ -1111,7 +1104,7 @@ uint8_t SerialPort::setMode(const uint8_t* data, uint8_t length)
 
     DVM_STATE modemState = DVM_STATE(data[0U]);
 
-    if (modemState == m_modemState)
+    if (modemState == m_modem->m_modemState)
         return RSN_OK;
 
     uint8_t ret = modemStateCheck(modemState);
@@ -1129,109 +1122,109 @@ void SerialPort::setMode(DVM_STATE modemState)
 {
     switch (modemState) {
     case STATE_DMR:
-        DEBUG1("SerialPort::setMode() mode set to DMR");
-        p25RX.reset();
-        nxdnRX.reset();
-        cwIdTX.reset();
+        m_modem->writeDebug("SerialPort::setMode() mode set to DMR");
+        m_modem->m_p25RX.reset();
+        m_modem->m_nxdnRX.reset();
+        m_modem->m_cwIdTX.reset();
         break;
     case STATE_P25:
-        DEBUG1("SerialPort::setMode() mode set to P25");
-        dmrIdleRX.reset();
-        dmrDMORX.reset();
-        dmrRX.reset();
-        nxdnRX.reset();
-        cwIdTX.reset();
+        m_modem->writeDebug("SerialPort::setMode() mode set to P25");
+        m_modem->m_dmrIdleRX.reset();
+        m_modem->m_dmrDMORX.reset();
+        m_modem->m_dmrRX.reset();
+        m_modem->m_nxdnRX.reset();
+        m_modem->m_cwIdTX.reset();
         break;
     case STATE_NXDN:
-        DEBUG1("SerialPort::setMode() mode set to NXDN");
-        dmrIdleRX.reset();
-        dmrDMORX.reset();
-        dmrRX.reset();
-        p25RX.reset();
-        nxdnRX.reset();
-        cwIdTX.reset();
+        m_modem->writeDebug("SerialPort::setMode() mode set to NXDN");
+        m_modem->m_dmrIdleRX.reset();
+        m_modem->m_dmrDMORX.reset();
+        m_modem->m_dmrRX.reset();
+        m_modem->m_p25RX.reset();
+        m_modem->m_nxdnRX.reset();
+        m_modem->m_cwIdTX.reset();
         break;
     case STATE_DMR_CAL:
-        DEBUG1("SerialPort::setMode() mode set to DMR Calibrate");
-        dmrIdleRX.reset();
-        dmrDMORX.reset();
-        dmrRX.reset();
-        p25RX.reset();
-        nxdnRX.reset();
-        cwIdTX.reset();
+        m_modem->writeDebug("SerialPort::setMode() mode set to DMR Calibrate");
+        m_modem->m_dmrIdleRX.reset();
+        m_modem->m_dmrDMORX.reset();
+        m_modem->m_dmrRX.reset();
+        m_modem->m_p25RX.reset();
+        m_modem->m_nxdnRX.reset();
+        m_modem->m_cwIdTX.reset();
         break;
     case STATE_P25_CAL:
-        DEBUG1("SerialPort::setMode() mode set to P25 Calibrate");
-        dmrIdleRX.reset();
-        dmrDMORX.reset();
-        dmrRX.reset();
-        p25RX.reset();
-        nxdnRX.reset();
-        cwIdTX.reset();
+        m_modem->writeDebug("SerialPort::setMode() mode set to P25 Calibrate");
+        m_modem->m_dmrIdleRX.reset();
+        m_modem->m_dmrDMORX.reset();
+        m_modem->m_dmrRX.reset();
+        m_modem->m_p25RX.reset();
+        m_modem->m_nxdnRX.reset();
+        m_modem->m_cwIdTX.reset();
         break;
     case STATE_NXDN_CAL:
-        DEBUG1("SerialPort::setMode() mode set to NXDN Calibrate");
-        dmrIdleRX.reset();
-        dmrDMORX.reset();
-        dmrRX.reset();
-        p25RX.reset();
-        nxdnRX.reset();
-        cwIdTX.reset();
+        m_modem->writeDebug("SerialPort::setMode() mode set to NXDN Calibrate");
+        m_modem->m_dmrIdleRX.reset();
+        m_modem->m_dmrDMORX.reset();
+        m_modem->m_dmrRX.reset();
+        m_modem->m_p25RX.reset();
+        m_modem->m_nxdnRX.reset();
+        m_modem->m_cwIdTX.reset();
         break;
     case STATE_RSSI_CAL:
-        DEBUG1("SerialPort::setMode() mode set to RSSI Calibrate");
-        dmrIdleRX.reset();
-        dmrDMORX.reset();
-        dmrRX.reset();
-        p25RX.reset();
-        nxdnRX.reset();
-        cwIdTX.reset();
+        m_modem->writeDebug("SerialPort::setMode() mode set to RSSI Calibrate");
+        m_modem->m_dmrIdleRX.reset();
+        m_modem->m_dmrDMORX.reset();
+        m_modem->m_dmrRX.reset();
+        m_modem->m_p25RX.reset();
+        m_modem->m_nxdnRX.reset();
+        m_modem->m_cwIdTX.reset();
         break;
     case STATE_DMR_LF_CAL:
-        DEBUG1("SerialPort::setMode() mode set to DMR 80Hz Calibrate");
-        dmrIdleRX.reset();
-        dmrDMORX.reset();
-        dmrRX.reset();
-        p25RX.reset();
-        nxdnRX.reset();
-        cwIdTX.reset();
+        m_modem->writeDebug("SerialPort::setMode() mode set to DMR 80Hz Calibrate");
+        m_modem->m_dmrIdleRX.reset();
+        m_modem->m_dmrDMORX.reset();
+        m_modem->m_dmrRX.reset();
+        m_modem->m_p25RX.reset();
+        m_modem->m_nxdnRX.reset();
+        m_modem->m_cwIdTX.reset();
         break;
     case STATE_DMR_CAL_1K:
-        DEBUG1("SerialPort::setMode() mode set to DMR BS 1031Hz Calibrate");
-        dmrIdleRX.reset();
-        dmrDMORX.reset();
-        dmrRX.reset();
-        p25RX.reset();
-        nxdnRX.reset();
-        cwIdTX.reset();
+        m_modem->writeDebug("SerialPort::setMode() mode set to DMR BS 1031Hz Calibrate");
+        m_modem->m_dmrIdleRX.reset();
+        m_modem->m_dmrDMORX.reset();
+        m_modem->m_dmrRX.reset();
+        m_modem->m_p25RX.reset();
+        m_modem->m_nxdnRX.reset();
+        m_modem->m_cwIdTX.reset();
         break;
     case STATE_DMR_DMO_CAL_1K:
-        DEBUG1("SerialPort::setMode() mode set to DMR MS 1031Hz Calibrate");
-        dmrIdleRX.reset();
-        dmrDMORX.reset();
-        dmrRX.reset();
-        p25RX.reset();
-        nxdnRX.reset();
-        cwIdTX.reset();
+        m_modem->writeDebug("SerialPort::setMode() mode set to DMR MS 1031Hz Calibrate");
+        m_modem->m_dmrIdleRX.reset();
+        m_modem->m_dmrDMORX.reset();
+        m_modem->m_dmrRX.reset();
+        m_modem->m_p25RX.reset();
+        m_modem->m_nxdnRX.reset();
+        m_modem->m_cwIdTX.reset();
         break;
     case STATE_P25_CAL_1K:
-        DEBUG1("SerialPort::setMode() mode set to P25 1011Hz Calibrate");
-        dmrIdleRX.reset();
-        dmrDMORX.reset();
-        dmrRX.reset();
-        p25RX.reset();
-        nxdnRX.reset();
-        cwIdTX.reset();
+        m_modem->writeDebug("SerialPort::setMode() mode set to P25 1011Hz Calibrate");
+        m_modem->m_dmrIdleRX.reset();
+        m_modem->m_dmrDMORX.reset();
+        m_modem->m_dmrRX.reset();
+        m_modem->m_p25RX.reset();
+        m_modem->m_nxdnRX.reset();
+        m_modem->m_cwIdTX.reset();
         break;
     default:
-        DEBUG1("SerialPort::setMode() mode set to Idle");
+        m_modem->writeDebug("SerialPort::setMode() mode set to Idle");
         // STATE_IDLE
         break;
     }
 
-    m_modemState = modemState;
+    m_modem->m_modemState = modemState;
 
-    io.setMode();
+    m_modem->m_io.setMode();
 }
 
 /* Sets the fine-tune symbol levels. */
@@ -1277,12 +1270,12 @@ uint8_t SerialPort::setSymbolLvlAdj(const uint8_t* data, uint8_t length)
     if (nxdnSymLvl1Adj < -128)
         return RSN_INVALID_REQUEST;
 
-    p25TX.setSymbolLvlAdj(p25SymLvl3Adj, p25SymLvl1Adj);
+    m_modem->m_p25TX.setSymbolLvlAdj(p25SymLvl3Adj, p25SymLvl1Adj);
 
-    dmrDMOTX.setSymbolLvlAdj(dmrSymLvl3Adj, dmrSymLvl1Adj);
-    dmrTX.setSymbolLvlAdj(dmrSymLvl3Adj, dmrSymLvl1Adj);
+    m_modem->m_dmrDMOTX.setSymbolLvlAdj(dmrSymLvl3Adj, dmrSymLvl1Adj);
+    m_modem->m_dmrTX.setSymbolLvlAdj(dmrSymLvl3Adj, dmrSymLvl1Adj);
 
-    nxdnTX.setSymbolLvlAdj(nxdnSymLvl3Adj, nxdnSymLvl1Adj);
+    m_modem->m_nxdnTX.setSymbolLvlAdj(nxdnSymLvl3Adj, nxdnSymLvl1Adj);
 
     return RSN_OK;
 }
@@ -1296,7 +1289,7 @@ uint8_t SerialPort::setRXLevel(const uint8_t* data, uint8_t length)
 
     uint8_t rxLevel = data[0U];
 
-    io.setRXLevel(rxLevel);
+    m_modem->m_io.setRXLevel(rxLevel);
 
     return RSN_OK;
 }
@@ -1305,8 +1298,78 @@ uint8_t SerialPort::setRXLevel(const uint8_t* data, uint8_t length)
 
 uint8_t SerialPort::setRFParams(const uint8_t* data, uint8_t length)
 {
-    // unused on dedicated modem -- see firmware_hs for implementation
-    return RSN_OK;
+    if (length < 17U)
+        return RSN_ILLEGAL_LENGTH;
+
+    uint32_t rxFreq, txFreq;
+    uint8_t rfPower;
+
+    rxFreq = data[1U] << 0;
+    rxFreq |= data[2U] << 8;
+    rxFreq |= data[3U] << 16;
+    rxFreq |= data[4U] << 24;
+
+    txFreq = data[5U] << 0;
+    txFreq |= data[6U] << 8;
+    txFreq |= data[7U] << 16;
+    txFreq |= data[8U] << 24;
+
+    rfPower = data[9U];
+
+    int8_t dmrDiscBWAdj = int8_t(data[10U]) - 128;
+    if (dmrDiscBWAdj > 128)
+        return RSN_INVALID_REQUEST;
+    if (dmrDiscBWAdj < -128)
+        return RSN_INVALID_REQUEST;
+
+    int8_t p25DiscBWAdj = int8_t(data[11U]) - 128;
+    if (p25DiscBWAdj > 128)
+        return RSN_INVALID_REQUEST;
+    if (p25DiscBWAdj < -128)
+        return RSN_INVALID_REQUEST;
+
+    int8_t nxdnDiscBWAdj = int8_t(data[15U]) - 128;
+    if (nxdnDiscBWAdj > 128)
+        return RSN_INVALID_REQUEST;
+    if (nxdnDiscBWAdj < -128)
+        return RSN_INVALID_REQUEST;
+
+    int8_t dmrPostBWAdj = int8_t(data[12U]) - 128;
+    if (dmrPostBWAdj > 128)
+        return RSN_INVALID_REQUEST;
+    if (dmrPostBWAdj < -128)
+        return RSN_INVALID_REQUEST;
+
+    int8_t p25PostBWAdj = int8_t(data[13U]) - 128;
+    if (p25PostBWAdj > 128)
+        return RSN_INVALID_REQUEST;
+    if (p25PostBWAdj < -128)
+        return RSN_INVALID_REQUEST;
+
+    int8_t nxdnPostBWAdj = int8_t(data[16U]) - 128;
+    if (nxdnPostBWAdj > 128)
+        return RSN_INVALID_REQUEST;
+    if (nxdnPostBWAdj < -128)
+        return RSN_INVALID_REQUEST;
+
+    // support optional AFC parameters
+    if (length > 17U) {
+        if (length < 19U)
+            return RSN_ILLEGAL_LENGTH;
+
+        bool afcEnable = (data[17U] & 0x80U) == 0x80U;
+        uint8_t afcKI = data[17U] & 0x0FU;
+        uint8_t afcKP = (data[17U] >> 4) & 0x07U;
+        uint8_t afcRange = data[18U];
+
+        m_modem->m_io.setAFCParams(afcEnable, afcKI, afcKP, afcRange);
+    } else {
+        m_modem->m_io.setAFCParams(false, 11, 4, 1);
+    }
+
+    m_modem->m_io.setRFAdjust(dmrDiscBWAdj, p25DiscBWAdj, nxdnDiscBWAdj, dmrPostBWAdj, p25PostBWAdj, nxdnPostBWAdj);
+
+    return m_modem->m_io.setRFParams(rxFreq, txFreq, rfPower);
 }
 
 /* Sets the protocol ring buffer sizes. */
@@ -1315,7 +1378,7 @@ uint8_t SerialPort::setBuffers(const uint8_t* data, uint8_t length)
 {
     if (length < 1U)
         return RSN_ILLEGAL_LENGTH;
-    if (m_modemState != STATE_IDLE)
+    if (m_modem->m_modemState != STATE_IDLE)
         return RSN_INVALID_MODE;
 
     uint16_t dmrBufSize = dmr::DMR_TX_BUFFER_LEN;
@@ -1326,11 +1389,91 @@ uint8_t SerialPort::setBuffers(const uint8_t* data, uint8_t length)
     p25BufSize = (data[2U] << 8) + (data[3U]);
     nxdnBufSize = (data[4U] << 8) + (data[5U]);
 
-    p25TX.resizeBuffer(p25BufSize);
-    nxdnTX.resizeBuffer(nxdnBufSize);
+    m_modem->m_p25TX.resizeBuffer(p25BufSize);
+    m_modem->m_nxdnTX.resizeBuffer(nxdnBufSize);
 
-    dmrTX.resizeBuffer(dmrBufSize);
-    dmrDMOTX.resizeBuffer(dmrBufSize);
+    m_modem->m_dmrTX.resizeBuffer(dmrBufSize);
+    m_modem->m_dmrDMOTX.resizeBuffer(dmrBufSize);
 
     return RSN_OK;
+}
+
+/* Reads data from the modem flash parititon. */
+
+void SerialPort::flashRead()
+{
+    m_modem->writeDebug("SerialPort: flashRead(): unsupported on Native SDR");
+    sendNAK(RSN_NO_INTERNAL_FLASH);
+    // unused on SDR based dedicated modems
+}
+
+/* Writes data to the modem flash partition. */
+
+uint8_t SerialPort::flashWrite(const uint8_t* data, uint8_t length)
+{
+    m_modem->writeDebug("SerialPort: flashWrite(): unsupported on Native SDR");
+    // unused on SDR based dedicated modems
+    return RSN_NO_INTERNAL_FLASH;
+}
+
+/* */
+
+void SerialPort::beginInt(uint8_t n, int speed)
+{
+    switch (n) {
+    case 1U:
+        s_readBuffer = 0x00U;
+        break;
+    default:
+        break;
+    }
+}
+
+/* */
+
+int SerialPort::availableInt(uint8_t n)
+{
+    switch (n) {
+    case 1U:
+        return m_modem->m_port->read(&s_readBuffer, (uint8_t)(1 * sizeof(uint8_t)));
+    default:
+        return 0;
+    }
+}
+
+/* */
+
+int SerialPort::availableForWriteInt(uint8_t n)
+{
+    switch (n) {
+    case 1U:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* */
+
+uint8_t SerialPort::readInt(uint8_t n)
+{
+    switch (n) {
+    case 1U:
+        return s_readBuffer;
+    default:
+        return 0U;
+    }
+}
+
+/* */
+
+void SerialPort::writeInt(uint8_t n, const uint8_t* data, uint16_t length, bool flush)
+{
+    switch (n) {
+    case 1U:
+        m_modem->m_port->write(data, length);
+        break;
+    default:
+        break;
+    }
 }

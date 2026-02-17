@@ -53,8 +53,9 @@ namespace dmr
     public:
         /**
          * @brief Initializes a new instance of the DMRTX class.
+         * @param modem The modem instance.
          */
-        DMRTX();
+        DMRTX(modem::Modem* modem);
 
         /**
          * @brief Process local buffer and transmit on the air interface.
@@ -152,6 +153,7 @@ namespace dmr
         uint32_t getFrameCount();
 
     private:
+        modem::Modem* m_modem;
         modem::SerialBuffer m_fifo[2U];
 
         arm_fir_interpolate_instance_q15 m_modFilter;

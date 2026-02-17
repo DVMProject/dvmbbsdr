@@ -7,8 +7,8 @@
  *  Copyright (C) 2018 Andy Uribe, CA6JAU
  *
  */
-#include "Globals.h"
 #include "p25/CalP25.h"
+#include "modem/Modem.h"
 
 using namespace p25;
 
@@ -52,7 +52,8 @@ unsigned char LDU2_1K[] = { 0x00,
 
 /* Initializes a new instance of the CalP25 class. */
 
-CalP25::CalP25() :
+CalP25::CalP25(modem::Modem* modem) :
+    m_modem(modem),
     m_transmit(false),
     m_state(P25CAL1K_IDLE)
 {
@@ -63,31 +64,31 @@ CalP25::CalP25() :
 
 void CalP25::process()
 {
-    if (m_modemState == STATE_P25_CAL) {
+    if (m_modem->m_modemState == STATE_P25_CAL) {
         m_state = P25CAL1K_IDLE; 
 
         if (m_transmit) {
-            p25TX.setCal(true);
-            p25TX.process();
+            m_modem->m_p25TX.setCal(true);
+            m_modem->m_p25TX.process();
         }
         else {
-            p25TX.setCal(false);
+            m_modem->m_p25TX.setCal(false);
         }
     }
     else {
-        p25TX.process();
+        m_modem->m_p25TX.process();
 
-        uint16_t space = p25TX.getSpace();
+        uint16_t space = m_modem->m_p25TX.getSpace();
         if (space < 1U)
             return;
 
         switch (m_state) {
             case P25CAL1K_LDU1:
-                p25TX.writeData(LDU1_1K, P25_LDU_FRAME_LENGTH_BYTES + 1U);
+                m_modem->m_p25TX.writeData(LDU1_1K, P25_LDU_FRAME_LENGTH_BYTES + 1U);
                 m_state = P25CAL1K_LDU2;
                 break;
             case P25CAL1K_LDU2:
-                p25TX.writeData(LDU2_1K, P25_LDU_FRAME_LENGTH_BYTES + 1U);
+                m_modem->m_p25TX.writeData(LDU2_1K, P25_LDU_FRAME_LENGTH_BYTES + 1U);
                 if (!m_transmit) {
                     m_state = P25CAL1K_IDLE;
                 }

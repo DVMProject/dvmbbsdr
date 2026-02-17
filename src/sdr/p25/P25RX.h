@@ -49,8 +49,9 @@ namespace p25
     public:
         /**
          * @brief Initializes a new instance of the P25RX class.
+         * @param modem The modem instance.
          */
-        P25RX();
+        P25RX(modem::Modem* modem);
 
         /**
          * @brief Helper to reset data values to defaults.
@@ -77,6 +78,8 @@ namespace p25
         void setCorrCount(uint8_t count);
 
     private:
+        modem::Modem* m_modem;
+
         uint32_t m_bitBuffer[P25_RADIO_SYMBOL_LENGTH];
         q15_t m_buffer[P25_PDU_FRAME_LENGTH_SAMPLES];
 

@@ -47,9 +47,10 @@ namespace dmr
     public:
         /**
          * @brief Initializes a new instance of the DMRSlotRX class.
+         * @param modem The modem instance.
          * @param slot 
          */
-        DMRSlotRX(bool slot);
+        DMRSlotRX(modem::Modem* modem, bool slot);
 
         /**
          * @brief Helper to set data values for start of Rx.
@@ -79,6 +80,8 @@ namespace dmr
         void setRxDelay(uint8_t delay);
 
     private:
+        modem::Modem* m_modem;
+
         bool m_slot;
 
         uint32_t m_bitBuffer[DMR_RADIO_SYMBOL_LENGTH];

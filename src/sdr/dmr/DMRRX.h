@@ -33,8 +33,9 @@ namespace dmr
     public:
         /**
          * @brief Initializes a new instance of the DMRRX class.
+         * @param modem The modem instance.
          */
-        DMRRX();
+        DMRRX(modem::Modem* modem);
 
         /**
          * @brief Helper to reset data values to defaults.
@@ -62,6 +63,8 @@ namespace dmr
         void setRxDelay(uint8_t delay);
 
     private:
+        modem::Modem* m_modem;
+
         DMRSlotRX m_slot1RX;
         DMRSlotRX m_slot2RX;
     };

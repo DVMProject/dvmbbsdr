@@ -51,8 +51,9 @@ namespace dmr
     public:
         /**
          * @brief Initializes a new instance of the CalDMR class.
+         * @param modem The modem instance.
          */
-        CalDMR();
+        CalDMR(modem::Modem* modem);
 
         /**
          * @brief Process local state and transmit on the air interface.
@@ -88,6 +89,8 @@ namespace dmr
         uint8_t write(const uint8_t* data, uint8_t length);
 
     private:
+        modem::Modem* m_modem;
+
         bool m_transmit;
         DMR1KCAL m_state;
         uint32_t m_frameStart;

@@ -10,8 +10,9 @@
  *  Copyright (C) 2020 Bryan Biedenkapp, N2PLL
  *
  */
-#include "Globals.h"
+#include "dmr/DMRDMOTX.h"
 #include "dmr/DMRSlotType.h"
+#include "modem/Modem.h"
 
 using namespace dmr;
 
@@ -45,7 +46,8 @@ const uint8_t PR_FILL[] =
 
 /* Initializes a new instance of the DMRDMOTX class. */
 
-DMRDMOTX::DMRDMOTX() :
+DMRDMOTX::DMRDMOTX(modem::Modem* modem) :
+    m_modem(modem),
     m_fifo(DMR_TX_BUFFER_LEN),
     m_modFilter(),
     m_modState(),
@@ -69,7 +71,7 @@ DMRDMOTX::DMRDMOTX() :
 void DMRDMOTX::process()
 {
     if (m_poLen == 0U && m_fifo.getData() > 0U) {
-        if (!m_tx) {
+        if (!m_modem->m_tx) {
             for (uint16_t i = 0U; i < m_preambleCnt; i++)
                 m_poBuffer[i] = DMR_START_SYNC;
 
@@ -89,11 +91,11 @@ void DMRDMOTX::process()
     }
 
     if (m_poLen > 0U) {
-        if (!m_tx) {
-            io.setTransmit();
+        if (!m_modem->m_tx) {
+            m_modem->m_io.setTransmit();
         }
 
-        uint16_t space = io.getSpace();
+        uint16_t space = m_modem->m_io.getSpace();
 
         while (space > (4U * DMR_RADIO_SYMBOL_LENGTH)) {
             uint8_t c = m_poBuffer[m_poPtr++];
@@ -119,7 +121,7 @@ uint8_t DMRDMOTX::writeData(const uint8_t* data, uint8_t length)
         return RSN_ILLEGAL_LENGTH;
 
     uint16_t space = m_fifo.getSpace();
-    DEBUG3("DMRDMOTX::writeData() dataLength/fifoLength", length, space);
+    m_modem->writeDebug("DMRDMOTX::writeData() dataLength/fifoLength", length, space);
     if (space < DMR_FRAME_LENGTH_BYTES)
         return RSN_RINGBUFF_FULL;
 
@@ -208,7 +210,7 @@ void DMRDMOTX::writeByte(uint8_t c)
 
     ::arm_fir_interpolate_q15(&m_modFilter, inBuffer, outBuffer, 4U);
 
-    io.write(STATE_DMR, outBuffer, DMR_RADIO_SYMBOL_LENGTH * 4U);
+    m_modem->m_io.write(STATE_DMR, outBuffer, DMR_RADIO_SYMBOL_LENGTH * 4U);
 }
 
 /* */
@@ -220,5 +222,5 @@ void DMRDMOTX::writeSilence()
 
     ::arm_fir_interpolate_q15(&m_modFilter, inBuffer, outBuffer, 4U);
 
-    io.write(STATE_DMR, outBuffer, DMR_RADIO_SYMBOL_LENGTH * 4U);
+    m_modem->m_io.write(STATE_DMR, outBuffer, DMR_RADIO_SYMBOL_LENGTH * 4U);
 }

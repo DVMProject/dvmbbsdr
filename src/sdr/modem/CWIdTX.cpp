@@ -8,8 +8,10 @@
  *  Copyright (C) 2016 Colin Durbridge, G4EML
  *
  */
-#include "Globals.h"
 #include "CWIdTX.h"
+#include "modem/Modem.h"
+
+using namespace modem;
 
 // ---------------------------------------------------------------------------
 //  Constants
@@ -82,7 +84,8 @@ const struct {
 
 /* Initializes a new instance of the CWIdTX class. */
 
-CWIdTX::CWIdTX() :
+CWIdTX::CWIdTX(modem::Modem* modem) :
+    m_modem(modem),
     m_poBuffer(),
     m_poLen(0U),
     m_poPtr(0U),
@@ -98,14 +101,14 @@ void CWIdTX::process()
     if (m_poLen == 0U)
         return;
 
-    uint16_t space = io.getSpace();
+    uint16_t space = m_modem->m_io.getSpace();
 
     while (space > CYCLE_LENGTH) {
         bool b = READ_BIT(m_poBuffer, m_poPtr);
         if (b)
-            io.write(STATE_CW, TONE, CYCLE_LENGTH);
+            m_modem->m_io.write(STATE_CW, TONE, CYCLE_LENGTH);
         else
-            io.write(STATE_CW, SILENCE, CYCLE_LENGTH);
+            m_modem->m_io.write(STATE_CW, SILENCE, CYCLE_LENGTH);
 
         space -= CYCLE_LENGTH;
 
@@ -160,7 +163,7 @@ uint8_t CWIdTX::write(const uint8_t* data, uint8_t length)
 
     m_poLen += 5U;
 
-    DEBUG2("CWIdTx::write() message length", m_poLen);
+    m_modem->writeDebug("CWIdTx::write() message length", m_poLen);
 
     return RSN_OK;
 }

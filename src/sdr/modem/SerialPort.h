@@ -13,14 +13,11 @@
  * @ingroup modem_fw
  * @file SerialPort.cpp
  * @ingroup modem_fw
- * @file SerialPortSDR.cpp
- * @ingroup modem_fw
  */
 #if !defined(__SERIAL_PORT_H__)
 #define __SERIAL_PORT_H__
 
 #include "Defines.h"
-#include "Globals.h"
 #include "modem/SerialBuffer.h"
 
 // ---------------------------------------------------------------------------
@@ -168,7 +165,7 @@ namespace modem
         /**
          * @brief Initializes a new instance of the SerialPort class.
          */
-        SerialPort();
+        SerialPort(modem::Modem* modem);
 
         /**
          * @brief Starts serial port communications.
@@ -284,6 +281,8 @@ namespace modem
         virtual void writeDump(const uint8_t* data, uint16_t length);
 
     private:
+        modem::Modem* m_modem;
+
         uint8_t m_buffer[SERIAL_FB_LEN];
         uint16_t m_ptr;
         uint16_t m_len;

@@ -28,38 +28,21 @@ log:
     fileRoot: DVMSDR
 
 #
-# Digital Protocol Configuration
+# Virtual Modem Configuration
 #
-protocols:
-    #
-    # Digital Mobile Radio
-    #
-    dmr:
-        # Flag indicating whether or not the protocol is enabled.
-        enable: true
-        # Flag indicating whether or not verbose logging is enabled.
-        verbose: true
-        # Flag indicating whether or not debug logging is enabled.
-        debug: false
-    
-    #
-    # Project 25
-    #
-    p25:
-        # Flag indicating whether or not the protocol is enabled.
-        enable: true
-        # Flag indicating whether or not verbose logging is enabled.
-        verbose: true
-        # Flag indicating whether or not debug logging is enabled.
-        debug: false
+modems:
+    - protocol:
+        # UART/RS232 serial port device.
+        port: /tmp/dvm0
+    - protocol:
+        # UART/RS232 serial port device.
+        port: /tmp/dvm1
 
-    #
-    # Next Generation Digital Narrowband
-    #
-    nxdn:
-        # Flag indicating whether or not the protocol is enabled.
-        enable: false
-        # Flag indicating whether or not verbose logging is enabled.
-        verbose: true
-        # Flag indicating whether or not debug logging is enabled.
-        debug: false
+#
+# System Configuration
+#
+system:
+    # Flag indicating whether or not verbose logging is enabled.
+    verbose: true
+    # Flag indicating whether or not debug logging is enabled.
+    debug: false

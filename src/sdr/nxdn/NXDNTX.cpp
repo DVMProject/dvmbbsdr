@@ -9,9 +9,9 @@
  *  Copyright (C) 2022 Bryan Biedenkapp, N2PLL
  *
  */
-#include "Globals.h"
 #include "nxdn/NXDNTX.h"
 #include "nxdn/NXDNDefines.h"
+#include "modem/Modem.h"
 
 using namespace nxdn;
 
@@ -63,7 +63,8 @@ const q15_t NXDN_LEVELD = -735;
 
 /* Initializes a new instance of the NXDNTX class. */
 
-NXDNTX::NXDNTX() :
+NXDNTX::NXDNTX(modem::Modem* modem) :
+    m_modem(modem),
     m_fifo(NXDN_TX_BUFFER_LEN),
     m_state(NXDNTXSTATE_NORMAL),
     m_modFilter(),
@@ -99,7 +100,7 @@ void NXDNTX::process()
     if (m_fifo.getData() == 0U && m_poLen == 0U && m_tailCnt > 0U &&
         m_state != NXDNTXSTATE_CAL) {
         // transmit silence until the hang timer has expired
-        uint16_t space = io.getSpace();
+        uint16_t space = m_modem->m_io.getSpace();
 
         while (space > (4U * NXDN_RADIO_SYMBOL_LENGTH)) {
             writeSilence();
@@ -130,11 +131,11 @@ void NXDNTX::process()
     }
 
     if (m_poLen > 0U) {
-        if (!m_tx) {
-            io.setTransmit();
+        if (!m_modem->m_tx) {
+            m_modem->m_io.setTransmit();
         }
 
-        uint16_t space = io.getSpace();
+        uint16_t space = m_modem->m_io.getSpace();
 
         while (space > (4U * NXDN_RADIO_SYMBOL_LENGTH)) {
             uint8_t c = m_poBuffer[m_poPtr++];
@@ -161,7 +162,7 @@ uint8_t NXDNTX::writeData(const uint8_t* data, uint8_t length)
         return RSN_ILLEGAL_LENGTH;
 
     uint16_t space = m_fifo.getSpace();
-    DEBUG3("NXDNTX::writeData() dataLength/fifoLength", length, space);
+    m_modem->writeDebug("NXDNTX::writeData() dataLength/fifoLength", length, space);
     if (space < NXDN_FRAME_LENGTH_BYTES)
         return RSN_RINGBUFF_FULL;
 
@@ -245,7 +246,7 @@ uint8_t NXDNTX::getSpace() const
 
 void NXDNTX::createData()
 {
-    if (!m_tx) {
+    if (!m_modem->m_tx) {
         for (uint16_t i = 0U; i < m_preambleCnt; i++)
             m_poBuffer[m_poLen++] = NXDN_SYNC;
 
@@ -254,7 +255,7 @@ void NXDNTX::createData()
         m_poBuffer[m_poLen++] = NXDN_PREAMBLE[2U];
     }
     else {
-        DEBUG2("NXDNTX::createData() fifoSpace", m_fifo.getSpace());
+        m_modem->writeDebug("NXDNTX::createData() fifoSpace", m_fifo.getSpace());
         for (uint8_t i = 0U; i < NXDN_FRAME_LENGTH_BYTES; i++) {
             m_poBuffer[m_poLen++] = m_fifo.get();
         }
@@ -294,7 +295,7 @@ void NXDNTX::writeByte(uint8_t c)
 
     ::arm_fir_fast_q15(&m_sincFilter, intBuffer, outBuffer, NXDN_RADIO_SYMBOL_LENGTH * 4U);
 
-    io.write(STATE_NXDN, outBuffer, NXDN_RADIO_SYMBOL_LENGTH * 4U);
+    m_modem->m_io.write(STATE_NXDN, outBuffer, NXDN_RADIO_SYMBOL_LENGTH * 4U);
 }
 
 /* */
@@ -309,5 +310,5 @@ void NXDNTX::writeSilence()
 
     ::arm_fir_fast_q15(&m_sincFilter, intBuffer, outBuffer, NXDN_RADIO_SYMBOL_LENGTH * 4U);
 
-    io.write(STATE_NXDN, outBuffer, NXDN_RADIO_SYMBOL_LENGTH * 4U);
+    m_modem->m_io.write(STATE_NXDN, outBuffer, NXDN_RADIO_SYMBOL_LENGTH * 4U);
 }

@@ -49,8 +49,9 @@ namespace dmr
     public:
         /**
          * @brief Initializes a new instance of the DMRDMORX class.
+         * @param modem The modem instance.
          */
-        DMRDMORX();
+        DMRDMORX(modem::Modem* modem);
 
         /**
          * @brief Helper to reset data values to defaults.
@@ -72,6 +73,8 @@ namespace dmr
         void setColorCode(uint8_t colorCode);
 
     private:
+        modem::Modem* m_modem;
+
         uint32_t m_bitBuffer[DMR_RADIO_SYMBOL_LENGTH];
         q15_t m_buffer[DMO_BUFFER_LENGTH_SAMPLES];
 

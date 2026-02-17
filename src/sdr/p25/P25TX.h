@@ -50,8 +50,9 @@ namespace p25
     public:
         /**
          * @brief Initializes a new instance of the P25TX class.
+         * @param modem The modem instance.
          */
-        P25TX();
+        P25TX(modem::Modem* modem);
 
         /**
          * @brief Process local buffer and transmit on the air interface.
@@ -106,6 +107,7 @@ namespace p25
         uint8_t getSpace() const;
 
     private:
+        modem::Modem* m_modem;
         modem::SerialBuffer m_fifo;
 
         P25TXSTATE m_state;

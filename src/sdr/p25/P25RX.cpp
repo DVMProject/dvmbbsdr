@@ -9,8 +9,8 @@
  *  Copyright (C) 2024 Patrick McDonnell, W3AXL
  *
  */
-#include "Globals.h"
 #include "p25/P25RX.h"
+#include "modem/Modem.h"
 #include "Utils.h"
 
 using namespace p25;
@@ -38,7 +38,8 @@ const uint8_t NOAVEPTR = 99U;
 
 /* Initializes a new instance of the P25RX class. */
 
-P25RX::P25RX() :
+P25RX::P25RX(modem::Modem* modem) :
+    m_modem(modem),
     m_bitBuffer(),
     m_buffer(),
     m_bitPtr(0U),
@@ -91,7 +92,7 @@ void P25RX::reset()
     m_lostCount = 0U;
     m_countdown = 0U;
 
-    DEBUG1("P25RX::samples() m_state = P25RXS_NONE");
+    m_modem->writeDebug("P25RX::samples() m_state = P25RXS_NONE");
     m_state = P25RXS_NONE;
     m_lduSyncPos = false;
 
@@ -134,13 +135,13 @@ void P25RX::samples(const q15_t* samples, uint16_t* rssi, uint8_t length)
                     m_rssiAccum = 0U;
                     m_rssiCount = 0U;
 
-                    io.setDecode(true);
-                    io.setADCDetection(true);
+                    m_modem->m_io.setDecode(true);
+                    m_modem->m_io.setADCDetection(true);
 
                     m_averagePtr = NOAVEPTR;
 
                     m_countdown = m_corrCountdown;
-                    DEBUG2("P25RX::samples() correlation countdown", m_countdown);
+                    m_modem->writeDebug("P25RX::samples() correlation countdown", m_countdown);
                 }
             }
 
@@ -169,12 +170,12 @@ void P25RX::samples(const q15_t* samples, uint16_t* rssi, uint8_t length)
                         m_maxSyncPtr -= P25_LDU_FRAME_LENGTH_SAMPLES;
                 }
 
-                DEBUG4("P25RX::samples() dataPtr/startPtr/endPtr", m_dataPtr, m_startPtr, m_endPtr);
-                DEBUG4("P25RX::samples() lostCount/maxSyncPtr/minSyncPtr", m_lostCount, m_maxSyncPtr, m_minSyncPtr);
+                m_modem->writeDebug("P25RX::samples() dataPtr/startPtr/endPtr", m_dataPtr, m_startPtr, m_endPtr);
+                m_modem->writeDebug("P25RX::samples() lostCount/maxSyncPtr/minSyncPtr", m_lostCount, m_maxSyncPtr, m_minSyncPtr);
 
                 m_countdown = 0U;
 
-                DEBUG1("P25RX::samples() m_state = P25RXS_SYNC");
+                m_modem->writeDebug("P25RX::samples() m_state = P25RXS_SYNC");
                 m_state = P25RXS_SYNC;
             }
         }
@@ -223,16 +224,16 @@ void P25RX::processSample(q15_t sample)
     // initial sample processing does not have an end pointer -- we simply wait till we've read
     // the samples up to the maximum sync pointer
     if (m_dataPtr == m_maxSyncPtr) {
-        DEBUG4("P25RX::processSample() dataPtr/startPtr/endPtr", m_dataPtr, m_startPtr, m_maxSyncPtr);
-        DEBUG4("P25RX::processSample() lostCount/maxSyncPtr/minSyncPtr", m_lostCount, m_maxSyncPtr, m_minSyncPtr);
+        m_modem->writeDebug("P25RX::processSample() dataPtr/startPtr/endPtr", m_dataPtr, m_startPtr, m_maxSyncPtr);
+        m_modem->writeDebug("P25RX::processSample() lostCount/maxSyncPtr/minSyncPtr", m_lostCount, m_maxSyncPtr, m_minSyncPtr);
 
         // calculateLevels(m_startPtr, P25_NID_LENGTH_SYMBOLS);
 
         if (!decodeNid(m_startPtr)) {
-            io.setDecode(false);
-            io.setADCDetection(false);
+            m_modem->m_io.setDecode(false);
+            m_modem->m_io.setADCDetection(false);
 
-            serial.writeP25Lost();
+            m_modem->m_serial.writeP25Lost();
             reset();
         }
         else {
@@ -241,13 +242,13 @@ void P25RX::processSample(q15_t sample)
                 {
                     calculateLevels(m_startPtr, P25_HDU_FRAME_LENGTH_SYMBOLS);
 
-                    DEBUG4("P25RX::processSample() sync found in HDU pos/centre/threshold", m_syncPtr, m_centreVal, m_thresholdVal);
+                    m_modem->writeDebug("P25RX::processSample() sync found in HDU pos/centre/threshold", m_syncPtr, m_centreVal, m_thresholdVal);
 
                     uint8_t frame[P25_HDU_FRAME_LENGTH_BYTES + 1U];
                     samplesToBits(m_startPtr, P25_HDU_FRAME_LENGTH_SYMBOLS, frame, P25_NID_LENGTH_SYMBOLS, m_centreVal, m_thresholdVal);
 
                     frame[0U] = 0x01U; // has sync
-                    serial.writeP25Data(frame, P25_HDU_FRAME_LENGTH_BYTES + 1U);
+                    m_modem->m_serial.writeP25Data(frame, P25_HDU_FRAME_LENGTH_BYTES + 1U);
                     reset();
 
                     // setup next cycle to use LDU sync positions
@@ -258,13 +259,13 @@ void P25RX::processSample(q15_t sample)
                 {
                     calculateLevels(m_startPtr, P25_TDU_FRAME_LENGTH_SYMBOLS);
 
-                    DEBUG4("P25RX::processSample() sync found in TDU pos/centre/threshold", m_syncPtr, m_centreVal, m_thresholdVal);
+                    m_modem->writeDebug("P25RX::processSample() sync found in TDU pos/centre/threshold", m_syncPtr, m_centreVal, m_thresholdVal);
 
                     uint8_t frame[P25_TDU_FRAME_LENGTH_BYTES + 1U];
                     samplesToBits(m_startPtr, P25_TDU_FRAME_LENGTH_SYMBOLS, frame, P25_NID_LENGTH_SYMBOLS, m_centreVal, m_thresholdVal);
 
                     frame[0U] = 0x01U; // has sync
-                    serial.writeP25Data(frame, P25_TDU_FRAME_LENGTH_BYTES + 1U);
+                    m_modem->m_serial.writeP25Data(frame, P25_TDU_FRAME_LENGTH_BYTES + 1U);
                     reset();
                 }
                 return;
@@ -276,7 +277,7 @@ void P25RX::processSample(q15_t sample)
                         writeLDUFrame();
                     }
 
-                    DEBUG1("P25RX::samples() m_state = P25RXS_VOICE (LDU1)");
+                    m_modem->writeDebug("P25RX::samples() m_state = P25RXS_VOICE (LDU1)");
                     m_state = P25RXS_VOICE;
                 }
                 break;
@@ -284,23 +285,23 @@ void P25RX::processSample(q15_t sample)
                 {
                     // calculateLevels(m_startPtr, P25_TSDU_FRAME_LENGTH_SYMBOLS);
 
-                    DEBUG4("P25RX::processSample() sync found in TSDU pos/centre/threshold", m_syncPtr, m_centreVal, m_thresholdVal);
+                    m_modem->writeDebug("P25RX::processSample() sync found in TSDU pos/centre/threshold", m_syncPtr, m_centreVal, m_thresholdVal);
 
                     uint8_t frame[P25_TSDU_FRAME_LENGTH_BYTES + 1U];
                     samplesToBits(m_startPtr, P25_TSDU_FRAME_LENGTH_SYMBOLS, frame, P25_NID_LENGTH_SYMBOLS, m_centreVal, m_thresholdVal);
 
                     frame[0U] = 0x01U; // has sync
-                    serial.writeP25Data(frame, P25_TSDU_FRAME_LENGTH_BYTES + 1U);
+                    m_modem->m_serial.writeP25Data(frame, P25_TSDU_FRAME_LENGTH_BYTES + 1U);
                     reset();
                 }
                 return;
             case P25_DUID_LDU2:
             case P25_DUID_VSELP2:
-                DEBUG1("P25RX::samples() m_state = P25RXS_VOICE (LDU2)");
+                m_modem->writeDebug("P25RX::samples() m_state = P25RXS_VOICE (LDU2)");
                 m_state = P25RXS_VOICE;
                 break;
             case P25_DUID_PDU:
-                DEBUG1("P25RX::samples() m_state = P25RXS_DATA");
+                m_modem->writeDebug("P25RX::samples() m_state = P25RXS_DATA");
                 m_state = P25RXS_DATA;
                 m_maxCorr = 0;
                 m_lostCount = MAX_SYNC_FRAMES;
@@ -309,19 +310,19 @@ void P25RX::processSample(q15_t sample)
                 {
                     calculateLevels(m_startPtr, P25_TDULC_FRAME_LENGTH_SYMBOLS);
 
-                    DEBUG4("P25RX::processSample() sync found in TDULC pos/centre/threshold", m_syncPtr, m_centreVal, m_thresholdVal);
+                    m_modem->writeDebug("P25RX::processSample() sync found in TDULC pos/centre/threshold", m_syncPtr, m_centreVal, m_thresholdVal);
 
                     uint8_t frame[P25_TDULC_FRAME_LENGTH_BYTES + 1U];
                     samplesToBits(m_startPtr, P25_TDULC_FRAME_LENGTH_SYMBOLS, frame, P25_NID_LENGTH_SYMBOLS, m_centreVal, m_thresholdVal);
 
                     frame[0U] = 0x01U; // has sync
-                    serial.writeP25Data(frame, P25_TDULC_FRAME_LENGTH_BYTES + 1U);
+                    m_modem->m_serial.writeP25Data(frame, P25_TDULC_FRAME_LENGTH_BYTES + 1U);
                     reset();
                 }
                 return;
             default:
                 {
-                    DEBUG3("P25RX::processSample() illegal DUID in NID", m_nac, m_duid);
+                    m_modem->writeDebug("P25RX::processSample() illegal DUID in NID", m_nac, m_duid);
                     reset();
                 }
                 return;
@@ -384,41 +385,41 @@ void P25RX::processVoice(q15_t sample)
 
         m_lostCount--;
 
-        DEBUG4("P25RX::processVoice() dataPtr/startPtr/endPtr", m_dataPtr, m_startPtr, m_endPtr);
-        DEBUG4("P25RX::processVoice() lostCount/maxSyncPtr/minSyncPtr", m_lostCount, m_maxSyncPtr, m_minSyncPtr);
+        m_modem->writeDebug("P25RX::processVoice() dataPtr/startPtr/endPtr", m_dataPtr, m_startPtr, m_endPtr);
+        m_modem->writeDebug("P25RX::processVoice() lostCount/maxSyncPtr/minSyncPtr", m_lostCount, m_maxSyncPtr, m_minSyncPtr);
 
         // we've not seen a data sync for too long, signal sync lost and change to P25RXS_NONE
         if (m_lostCount == 0U) {
-            DEBUG1("P25RX::processVoice() sync timeout in LDU, lost lock");
+            m_modem->writeDebug("P25RX::processVoice() sync timeout in LDU, lost lock");
 
-            io.setDecode(false);
-            io.setADCDetection(false);
+            m_modem->m_io.setDecode(false);
+            m_modem->m_io.setADCDetection(false);
 
-            serial.writeP25Lost();
+            m_modem->m_serial.writeP25Lost();
             reset();
         }
         else {
             if (!decodeNid(m_startPtr)) {
-                io.setDecode(false);
-                io.setADCDetection(false);
+                m_modem->m_io.setDecode(false);
+                m_modem->m_io.setADCDetection(false);
 
-                serial.writeP25Lost();
+                m_modem->m_serial.writeP25Lost();
                 reset();
             }
             else {
                 if (m_duid == P25_DUID_TDU) {
                     calculateLevels(m_startPtr, P25_TDU_FRAME_LENGTH_SYMBOLS);
 
-                    DEBUG4("P25RX::processVoice() sync found in TDU pos/centre/threshold", m_syncPtr, m_centreVal, m_thresholdVal);
+                    m_modem->writeDebug("P25RX::processVoice() sync found in TDU pos/centre/threshold", m_syncPtr, m_centreVal, m_thresholdVal);
 
                     uint8_t frame[P25_TDU_FRAME_LENGTH_BYTES + 1U];
                     samplesToBits(m_startPtr, P25_TDU_FRAME_LENGTH_SYMBOLS, frame, P25_NID_LENGTH_SYMBOLS, m_centreVal, m_thresholdVal);
 
                     frame[0U] = m_lostCount == (MAX_SYNC_FRAMES - 1U) ? 0x01U : 0x00U; // set sync flag
-                    serial.writeP25Data(frame, P25_TDU_FRAME_LENGTH_BYTES + 1U);
+                    m_modem->m_serial.writeP25Data(frame, P25_TDU_FRAME_LENGTH_BYTES + 1U);
 
-                    io.setDecode(false);
-                    io.setADCDetection(false);
+                    m_modem->m_io.setDecode(false);
+                    m_modem->m_io.setADCDetection(false);
 
                     reset();
                     return;
@@ -441,7 +442,7 @@ void P25RX::writeLDUFrame()
 {
     calculateLevels(m_startPtr, P25_LDU_FRAME_LENGTH_SYMBOLS);
 
-    DEBUG4("P25RX::writeLDUFrame() sync found in LDUx pos/centre/threshold", m_syncPtr, m_centreVal, m_thresholdVal);
+    m_modem->writeDebug("P25RX::writeLDUFrame() sync found in LDUx pos/centre/threshold", m_syncPtr, m_centreVal, m_thresholdVal);
 
     uint8_t frame[P25_LDU_FRAME_LENGTH_BYTES + 3U];
     samplesToBits(m_startPtr, P25_LDU_FRAME_LENGTH_SYMBOLS, frame, P25_NID_LENGTH_SYMBOLS, m_centreVal, m_thresholdVal);
@@ -453,13 +454,13 @@ void P25RX::writeLDUFrame()
         frame[217U] = (rssi >> 8) & 0xFFU;
         frame[218U] = (rssi >> 0) & 0xFFU;
 
-        serial.writeP25Data(false, frame, P25_LDU_FRAME_LENGTH_BYTES + 3U);
+        m_modem->m_serial.writeP25Data(false, frame, P25_LDU_FRAME_LENGTH_BYTES + 3U);
     }
     else {
-        serial.writeP25Data(false, frame, P25_LDU_FRAME_LENGTH_BYTES + 1U);
+        m_modem->m_serial.writeP25Data(false, frame, P25_LDU_FRAME_LENGTH_BYTES + 1U);
     }
 #else
-    serial.writeP25Data(frame, P25_LDU_FRAME_LENGTH_BYTES + 1U);
+    m_modem->m_serial.writeP25Data(frame, P25_LDU_FRAME_LENGTH_BYTES + 1U);
 #endif
 }
 
@@ -491,37 +492,37 @@ void P25RX::processData(q15_t sample)
 
         m_lostCount--;
 
-        DEBUG4("P25RX::processData() dataPtr/startPtr/pduEndPtr", m_dataPtr, m_startPtr, m_pduEndPtr);
-        DEBUG4("P25RX::processData() lostCount/maxSyncPtr/minSyncPtr", m_lostCount, m_maxSyncPtr, m_minSyncPtr);
+        m_modem->writeDebug("P25RX::processData() dataPtr/startPtr/pduEndPtr", m_dataPtr, m_startPtr, m_pduEndPtr);
+        m_modem->writeDebug("P25RX::processData() lostCount/maxSyncPtr/minSyncPtr", m_lostCount, m_maxSyncPtr, m_minSyncPtr);
 
         // we've not seen a data sync for too long, signal sync lost and change to P25RXS_NONE
         if (m_lostCount == 0U) {
-            DEBUG1("P25RX::processData() sync timeout in PDU, lost lock");
+            m_modem->writeDebug("P25RX::processData() sync timeout in PDU, lost lock");
 
-            io.setDecode(false);
-            io.setADCDetection(false);
+            m_modem->m_io.setDecode(false);
+            m_modem->m_io.setADCDetection(false);
 
-            serial.writeP25Lost();
+            m_modem->m_serial.writeP25Lost();
             reset();
         }
         else {
             if (!decodeNid(m_startPtr)) {
-                io.setDecode(false);
-                io.setADCDetection(false);
+                m_modem->m_io.setDecode(false);
+                m_modem->m_io.setADCDetection(false);
 
-                serial.writeP25Lost();
+                m_modem->m_serial.writeP25Lost();
                 reset();
             }
             else {
                 // calculateLevels(m_startPtr, P25_PDU_FRAME_LENGTH_SYMBOLS);
 
-                DEBUG4("P25RX::processData() sync found in PDU pos/centre/threshold", m_syncPtr, m_centreVal, m_thresholdVal);
+                m_modem->writeDebug("P25RX::processData() sync found in PDU pos/centre/threshold", m_syncPtr, m_centreVal, m_thresholdVal);
 
                 uint8_t frame[P25_PDU_FRAME_LENGTH_BYTES + 1U];
                 samplesToBits(m_startPtr, P25_PDU_FRAME_LENGTH_SYMBOLS, frame, 8U, m_centreVal, m_thresholdVal);
 
                 frame[0U] = m_lostCount == (MAX_SYNC_FRAMES - 1U) ? 0x01U : 0x00U; // set sync flag
-                serial.writeP25Data(frame, P25_PDU_FRAME_LENGTH_BYTES + 1U);
+                m_modem->m_serial.writeP25Data(frame, P25_PDU_FRAME_LENGTH_BYTES + 1U);
 
                 m_rssiAccum = 0U;
                 m_rssiCount = 0U;
@@ -601,14 +602,14 @@ bool P25RX::correlateSync()
                 errs += countBits8(sync[i] ^ P25_SYNC_BYTES[i]);
 
             if (errs <= maxErrs) {
-                DEBUG2("P25RX::correlateSync() symbol errs", symErrs);
-                DEBUG2("P25RX::correlateSync() bitPtr", m_bitPtr);
-                DEBUG5("P25RX::correlateSync() bitBuffer", (m_bitBuffer[m_bitPtr] >> 24) & 0xFFU, (m_bitBuffer[m_bitPtr] >> 16) & 0xFFU, (m_bitBuffer[m_bitPtr] >> 8) & 0xFFU, m_bitBuffer[m_bitPtr] & 0xFFU);
+                m_modem->writeDebug("P25RX::correlateSync() symbol errs", symErrs);
+                m_modem->writeDebug("P25RX::correlateSync() bitPtr", m_bitPtr);
+                m_modem->writeDebug("P25RX::correlateSync() bitBuffer", (m_bitBuffer[m_bitPtr] >> 24) & 0xFFU, (m_bitBuffer[m_bitPtr] >> 16) & 0xFFU, (m_bitBuffer[m_bitPtr] >> 8) & 0xFFU, m_bitBuffer[m_bitPtr] & 0xFFU);
 
-                DEBUG2("P25RX::correlateSync() sync errs", errs);
+                m_modem->writeDebug("P25RX::correlateSync() sync errs", errs);
 
-                DEBUG4("P25RX::correlateSync() sync [b0 - b2]", sync[0], sync[1], sync[2]);
-                DEBUG4("P25RX::correlateSync() sync [b3 - b5]", sync[3], sync[4], sync[5]);
+                m_modem->writeDebug("P25RX::correlateSync() sync [b0 - b2]", sync[0], sync[1], sync[2]);
+                m_modem->writeDebug("P25RX::correlateSync() sync [b3 - b5]", sync[3], sync[4], sync[5]);
 
                 m_maxCorr = corr;
                 m_lostCount = MAX_SYNC_FRAMES;
@@ -623,7 +624,7 @@ bool P25RX::correlateSync()
                 if (m_pduEndPtr >= P25_PDU_FRAME_LENGTH_SAMPLES)
                     m_pduEndPtr -= P25_PDU_FRAME_LENGTH_SAMPLES;
 
-                DEBUG5("P25RX::correlateSync() dataPtr/startPtr/endPtr/pduEndPtr", m_dataPtr, startPtr, m_endPtr, m_pduEndPtr);
+                m_modem->writeDebug("P25RX::correlateSync() dataPtr/startPtr/endPtr/pduEndPtr", m_dataPtr, startPtr, m_endPtr, m_pduEndPtr);
 
                 return true;
             }
@@ -644,22 +645,22 @@ bool P25RX::decodeNid(uint16_t start)
     uint8_t nid[P25_NID_LENGTH_BYTES];
     samplesToBits(nidStartPtr, P25_NID_LENGTH_SYMBOLS, nid, 0U, m_centreVal, m_thresholdVal);
 
-    DEBUG3("P25RX::decodeNid() sync [b0 - b1]", nid[0], nid[1]);
+    m_modem->writeDebug("P25RX::decodeNid() sync [b0 - b1]", nid[0], nid[1]);
 
     if (m_nac == 0xF7EU) {
         m_duid = nid[1U] & 0x0FU;
-        DEBUG2("P25RX::decodeNid() DUID for xDU", m_duid);
+        m_modem->writeDebug("P25RX::decodeNid() DUID for xDU", m_duid);
         return true;
     }
 
     uint16_t nac = (nid[0U] << 4) | ((nid[1U] & 0xF0U) >> 4);
     if (nac == m_nac) {
         m_duid = nid[1U] & 0x0FU;
-        DEBUG2("P25RX::decodeNid() DUID for xDU", m_duid);
+        m_modem->writeDebug("P25RX::decodeNid() DUID for xDU", m_duid);
         return true;
     }
     else {
-        DEBUG3("P25RX::decodeNid() invalid NAC found; nac != m_nac", nac, m_nac);
+        m_modem->writeDebug("P25RX::decodeNid() invalid NAC found; nac != m_nac", nac, m_nac);
     }
 
     return false;
@@ -702,7 +703,7 @@ void P25RX::calculateLevels(uint16_t start, uint16_t count)
 
     q15_t threshold = posThresh - centre;
 
-    DEBUG5("P25RX::calculateLevels() pos/neg/centre/threshold", posThresh, negThresh, centre, threshold);
+    m_modem->writeDebug("P25RX::calculateLevels() pos/neg/centre/threshold", posThresh, negThresh, centre, threshold);
 
     if (m_averagePtr == NOAVEPTR) {
         for (uint8_t i = 0U; i < 16U; i++) {

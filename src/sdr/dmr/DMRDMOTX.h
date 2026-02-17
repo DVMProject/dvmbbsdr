@@ -43,8 +43,9 @@ namespace dmr
     public:
         /**
          * @brief Initializes a new instance of the DMRDMOTX class.
+         * @param modem The modem instance.
          */
-        DMRDMOTX();
+        DMRDMOTX(modem::Modem* modem);
 
         /**
          * @brief Process local buffer and transmit on the air interface.
@@ -84,6 +85,7 @@ namespace dmr
         uint8_t getSpace() const;
 
     private:
+        modem::Modem* m_modem;
         modem::SerialBuffer m_fifo;
 
         arm_fir_interpolate_instance_q15 m_modFilter;

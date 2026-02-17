@@ -7,9 +7,9 @@
  *  Copyright (C) 2009-2017 Jonathan Naylor, G4KLX
  *
  */
-#include "Globals.h"
 #include "dmr/DMRDMORX.h"
 #include "dmr/DMRSlotType.h"
+#include "modem/Modem.h"
 #include "Utils.h"
 
 using namespace dmr;
@@ -37,7 +37,8 @@ const uint8_t CONTROL_DATA = 0x40U;
 
 /* Initializes a new instance of the DMRDMORX class. */
 
-DMRDMORX::DMRDMORX() :
+DMRDMORX::DMRDMORX(modem::Modem* modem) :
+    m_modem(modem),
     m_bitBuffer(),
     m_buffer(),
     m_bitPtr(0U),
@@ -82,7 +83,7 @@ void DMRDMORX::samples(const q15_t* samples, const uint16_t* rssi, uint8_t lengt
     for (uint8_t i = 0U; i < length; i++)
         dcd = processSample(samples[i], rssi[i]);
 
-    io.setDecode(dcd);
+    m_modem->m_io.setDecode(dcd);
 }
 
 /* Sets the DMR color code. */
@@ -158,7 +159,7 @@ bool DMRDMORX::processSample(q15_t sample, uint16_t rssi)
 
                 switch (dataType) {
                 case DT_DATA_HEADER:
-                    DEBUG4("DMRDMORX::processSample() data header found pos/centre/threshold", m_syncPtr, centre, threshold);
+                    m_modem->writeDebug("DMRDMORX::processSample() data header found pos/centre/threshold", m_syncPtr, centre, threshold);
                     writeRSSIData(frame);
                     m_state = DMORXS_DATA;
                     m_type = 0x00U;
@@ -167,32 +168,32 @@ bool DMRDMORX::processSample(q15_t sample, uint16_t rssi)
                 case DT_RATE_34_DATA:
                 case DT_RATE_1_DATA:
                     if (m_state == DMORXS_DATA) {
-                        DEBUG4("DMRDMORX::processSample() data payload found pos/centre/threshold", m_syncPtr, centre, threshold);
+                        m_modem->writeDebug("DMRDMORX::processSample() data payload found pos/centre/threshold", m_syncPtr, centre, threshold);
                         writeRSSIData(frame);
                         m_type = dataType;
                     }
                     break;
                 case DT_VOICE_LC_HEADER:
-                    DEBUG4("DMRDMORX::processSample() voice header found pos/centre/threshold", m_syncPtr, centre, threshold);
+                    m_modem->writeDebug("DMRDMORX::processSample() voice header found pos/centre/threshold", m_syncPtr, centre, threshold);
                     writeRSSIData(frame);
                     m_state = DMORXS_VOICE;
                     break;
                 case DT_VOICE_PI_HEADER:
                     if (m_state == DMORXS_VOICE) {
-                        DEBUG4("DMRDMORX::processSample() voice pi header found pos/centre/threshold", m_syncPtr, centre, threshold);
+                        m_modem->writeDebug("DMRDMORX::processSample() voice pi header found pos/centre/threshold", m_syncPtr, centre, threshold);
                         writeRSSIData(frame);
                     }
                     m_state = DMORXS_VOICE;
                     break;
                 case DT_TERMINATOR_WITH_LC:
                     if (m_state == DMORXS_VOICE) {
-                        DEBUG4("DMRDMORX::processSample() voice terminator found pos/centre/threshold", m_syncPtr, centre, threshold);
+                        m_modem->writeDebug("DMRDMORX::processSample() voice terminator found pos/centre/threshold", m_syncPtr, centre, threshold);
                         writeRSSIData(frame);
                         reset();
                     }
                     break;
                 default:    // DT_CSBK
-                    DEBUG4("DMRDMORX::processSample() csbk found pos/centre/threshold", m_syncPtr, centre, threshold);
+                    m_modem->writeDebug("DMRDMORX::processSample() csbk found pos/centre/threshold", m_syncPtr, centre, threshold);
                     writeRSSIData(frame);
                     reset();
                     break;
@@ -201,7 +202,7 @@ bool DMRDMORX::processSample(q15_t sample, uint16_t rssi)
         }
         else if (m_control == CONTROL_VOICE) {
             // Voice sync
-            DEBUG4("DMRDMORX::processSample() voice sync found pos/centre/threshold", m_syncPtr, centre, threshold);
+            m_modem->writeDebug("DMRDMORX::processSample() voice sync found pos/centre/threshold", m_syncPtr, centre, threshold);
             writeRSSIData(frame);
             m_state = DMORXS_VOICE;
             m_syncCount = 0U;
@@ -211,8 +212,8 @@ bool DMRDMORX::processSample(q15_t sample, uint16_t rssi)
             if (m_state != DMORXS_NONE) {
                 m_syncCount++;
                 if (m_syncCount >= MAX_SYNC_LOST_FRAMES) {
-                    DEBUG1("DMRDMORX::processSample() sync timeout, lost lock");
-                    serial.writeDMRLost(true);
+                    m_modem->writeDebug("DMRDMORX::processSample() sync timeout, lost lock");
+                    m_modem->m_serial.writeDMRLost(true);
                     reset();
                 }
             }
@@ -226,7 +227,7 @@ bool DMRDMORX::processSample(q15_t sample, uint16_t rssi)
                     frame[0U] = ++m_n;
                 }
 
-                serial.writeDMRData(true, frame, DMR_FRAME_LENGTH_BYTES + 1U);
+                m_modem->m_serial.writeDMRData(true, frame, DMR_FRAME_LENGTH_BYTES + 1U);
             }
             else if (m_state == DMORXS_DATA) {
                 if (m_type != 0x00U) {
@@ -324,11 +325,11 @@ void DMRDMORX::correlateSync(bool first)
                     errs += countBits8((sync[i] & DMR_SYNC_BYTES_MASK[i]) ^ DMR_MS_DATA_SYNC_BYTES[i]);
 
                 if (errs <= MAX_SYNC_BYTES_ERRS) {
-                    DEBUG2("DMRDMORX::correlateSync() sync errs", errs);
+                    m_modem->writeDebug("DMRDMORX::correlateSync() sync errs", errs);
 
-                    DEBUG4("DMRDMORX::correlateSync() sync [b0 - b2]", sync[0], sync[1], sync[2]);
-                    DEBUG4("DMRDMORX::correlateSync() sync [b3 - b5]", sync[3], sync[4], sync[5]);
-                    DEBUG2("DMRDMORX::correlateSync() sync [b6]", sync[6]);
+                    m_modem->writeDebug("DMRDMORX::correlateSync() sync [b0 - b2]", sync[0], sync[1], sync[2]);
+                    m_modem->writeDebug("DMRDMORX::correlateSync() sync [b3 - b5]", sync[3], sync[4], sync[5]);
+                    m_modem->writeDebug("DMRDMORX::correlateSync() sync [b6]", sync[6]);
 
                     if (first) {
                         m_threshold[0U] = m_threshold[1U] = m_threshold[2U] = m_threshold[3U] = threshold;
@@ -356,7 +357,7 @@ void DMRDMORX::correlateSync(bool first)
                     if (m_endPtr >= DMO_BUFFER_LENGTH_SAMPLES)
                         m_endPtr -= DMO_BUFFER_LENGTH_SAMPLES;
 
-                    DEBUG5("DMRDMORX::correlateSync() dataPtr/syncPtr/startPtr/endPtr", m_dataPtr, m_syncPtr, m_startPtr, m_endPtr);
+                    m_modem->writeDebug("DMRDMORX::correlateSync() dataPtr/syncPtr/startPtr/endPtr", m_dataPtr, m_syncPtr, m_startPtr, m_endPtr);
                 }
             }
             else {  // if (voice1 || voice2)
@@ -365,11 +366,11 @@ void DMRDMORX::correlateSync(bool first)
                     errs += countBits8((sync[i] & DMR_SYNC_BYTES_MASK[i]) ^ DMR_MS_VOICE_SYNC_BYTES[i]);
 
                 if (errs <= MAX_SYNC_BYTES_ERRS) {
-                    DEBUG2("DMRDMORX::correlateSync() sync errs", errs);
+                    m_modem->writeDebug("DMRDMORX::correlateSync() sync errs", errs);
 
-                    DEBUG4("DMRDMORX::correlateSync() sync [b0 - b2]", sync[0], sync[1], sync[2]);
-                    DEBUG4("DMRDMORX::correlateSync() sync [b3 - b5]", sync[3], sync[4], sync[5]);
-                    DEBUG2("DMRDMORX::correlateSync() sync [b6]", sync[6]);
+                    m_modem->writeDebug("DMRDMORX::correlateSync() sync [b0 - b2]", sync[0], sync[1], sync[2]);
+                    m_modem->writeDebug("DMRDMORX::correlateSync() sync [b3 - b5]", sync[3], sync[4], sync[5]);
+                    m_modem->writeDebug("DMRDMORX::correlateSync() sync [b6]", sync[6]);
 
                     if (first) {
                         m_threshold[0U] = m_threshold[1U] = m_threshold[2U] = m_threshold[3U] = threshold;
@@ -397,7 +398,7 @@ void DMRDMORX::correlateSync(bool first)
                     if (m_endPtr >= DMO_BUFFER_LENGTH_SAMPLES)
                         m_endPtr -= DMO_BUFFER_LENGTH_SAMPLES;
 
-                    DEBUG5("DMRDMORX::correlateSync() dataPtr/syncPtr/startPtr/endPtr", m_dataPtr, m_syncPtr, m_startPtr, m_endPtr);
+                    m_modem->writeDebug("DMRDMORX::correlateSync() dataPtr/syncPtr/startPtr/endPtr", m_dataPtr, m_syncPtr, m_startPtr, m_endPtr);
                 }
             }
         }
@@ -463,8 +464,8 @@ void DMRDMORX::writeRSSIData(uint8_t* frame)
     frame[34U] = (avg >> 8) & 0xFFU;
     frame[35U] = (avg >> 0) & 0xFFU;
 
-    serial.writeDMRData(true, frame, DMR_FRAME_LENGTH_BYTES + 3U);
+    m_modem->m_serial.writeDMRData(true, frame, DMR_FRAME_LENGTH_BYTES + 3U);
 #else
-    serial.writeDMRData(true, frame, DMR_FRAME_LENGTH_BYTES + 1U);
+    m_modem->m_serial.writeDMRData(true, frame, DMR_FRAME_LENGTH_BYTES + 1U);
 #endif
 }

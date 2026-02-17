@@ -46,8 +46,9 @@ namespace nxdn
     public:
         /**
          * @brief Initializes a new instance of the NXDNRX class.
+         * @param modem The modem instance.
          */
-        NXDNRX();
+        NXDNRX(modem::Modem* modem);
 
         /**
          * @brief Helper to reset data values to defaults.
@@ -69,6 +70,8 @@ namespace nxdn
         void setCorrCount(uint8_t count);
 
     private:
+        modem::Modem* m_modem;
+
         uint16_t m_bitBuffer[NXDN_RADIO_SYMBOL_LENGTH];
         q15_t m_buffer[NXDN_FRAME_LENGTH_SAMPLES];
 

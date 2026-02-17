@@ -22,9 +22,55 @@
 #define __IO_H__
 
 #include "Defines.h"
-#include "Globals.h"
+#include "modem/SerialPort.h"
 #include "SampleBuffer.h"
 #include "RSSIBuffer.h"
+
+// ---------------------------------------------------------------------------
+//  Constants
+// ---------------------------------------------------------------------------
+
+/**
+ * @addtogroup hotspot_fw
+ * @{
+ */
+
+#define DEFAULT_FREQUENCY       433075000
+
+/** Band Tables */
+/** 136 - 174 mhz */
+#define VHF_MIN                 136000000
+#define VHF_MAX                 174000000
+
+/** 216 - 225 mhz */
+#define VHF_220_MIN             216000000
+#define VHF_220_MAX             225000000
+
+/** 380 - 431mhz */
+#define UHF_380_MIN             380000000
+#define UHF_380_MAX             431000000
+
+/** 431 - 450mhz */
+#define UHF_1_MIN               431000000
+#define UHF_1_MAX               470000000
+
+/** 450 - 470mhz */
+#define UHF_2_MIN               450000000
+#define UHF_2_MAX               470000000
+
+/** 470 - 520mhz (T-band) */
+#define UHF_T_MIN               470000000
+#define UHF_T_MAX               520000000
+
+/** 842 - 900mhz */
+#define UHF_800_MIN             842000000
+#define UHF_800_MAX             900000000
+
+/** 900 - 950mhz */
+#define UHF_900_MIN             900000000
+#define UHF_900_MAX             950000000
+
+/** @} */
 
 namespace modem
 {
@@ -41,7 +87,7 @@ namespace modem
         /**
          * @brief Initializes a new instance of the IO class.
          */
-        IO();
+        IO(modem::Modem* modem);
         /**
          * @brief Finalizes a new instance of the IO class.
          */
@@ -116,6 +162,32 @@ namespace modem
          * @param rxLevel Rx Level.
          */
         void setRXLevel(uint8_t rxLevel);
+        /**
+         * @brief Sets the RF parameters.
+         * @param rxFreq Receive Frequency (hz).
+         * @param txFreq Transmit Frequency (hz).
+         * @param rfPower RF Power Level.
+         * @returns uint8_t Reason code.
+         */
+        uint8_t setRFParams(uint32_t rxFreq, uint32_t txFreq, uint8_t rfPower);
+        /**
+         * @brief Sets the RF adjustment parameters.
+         * @param dmrDiscBWAdj DMR Discriminator Bandwidth Adjust.
+         * @param p25DiscBWAdj P25 Discriminator Bandwidth Adjust.
+         * @param nxdnDiscBWAdj NXDN Discriminator Bandwidth Adjust.
+         * @param dmrPostBWAdj DMR Post Bandwidth Adjust.
+         * @param p25PostBWAdj P25 Post Bandwidth Adjust.
+         * @param nxdnPostBWAdj NXDN Post Bandwidth Adjust.
+         */
+        void setRFAdjust(int8_t dmrDiscBWAdj, int8_t p25DiscBWAdj, int8_t nxdnDiscBWAdj, int8_t dmrPostBWAdj, int8_t p25PostBWAdj, int8_t nxdnPostBWAdj);
+        /**
+         * @brief Sets the RF AFC adjustment parameters.
+         * @param afcEnable Flag indicating the Automatic Frequency Correction is enabled.
+         * @param afcKI 
+         * @param afcKP 
+         * @param afcRange 
+         */
+        void setAFCParams(bool afcEnable, uint8_t afcKI, uint8_t afcKP, uint8_t afcRange);
 
         /**
          * @brief Helper to get the state of the ADC and DAC overflow flags.
@@ -169,6 +241,8 @@ namespace modem
         void resetMCU();
 
     private:
+        modem::Modem* m_modem;
+
         bool m_started;
 
         SampleBuffer m_rxBuffer;
@@ -219,6 +293,22 @@ namespace modem
         volatile uint32_t m_watchdog;
 
         bool m_lockout;
+
+        uint32_t m_rxFrequency;
+        uint32_t m_txFrequency;
+        uint8_t m_rfPower;
+
+        int8_t m_dmrDiscBWAdj;
+        int8_t m_p25DiscBWAdj;
+        int8_t m_nxdnDiscBWAdj;
+        int8_t m_dmrPostBWAdj;
+        int8_t m_p25PostBWAdj;
+        int8_t m_nxdnPostBWAdj;
+
+        bool m_afcEnable;
+        uint8_t m_afcKI;
+        uint8_t m_afcKP;
+        uint8_t m_afcRange;
 
         // Hardware specific routines
         /**

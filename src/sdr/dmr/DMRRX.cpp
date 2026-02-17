@@ -7,8 +7,8 @@
  *  Copyright (C) 2015,2016 Jonathan Naylor, G4KLX
  *
  */
-#include "Globals.h"
 #include "dmr/DMRRX.h"
+#include "modem/Modem.h"
 
 using namespace dmr;
 
@@ -18,9 +18,10 @@ using namespace dmr;
 
 /* Initializes a new instance of the DMRRX class. */
 
-DMRRX::DMRRX() :
-    m_slot1RX(false),
-    m_slot2RX(true)
+DMRRX::DMRRX(modem::Modem* modem) :
+    m_modem(modem),
+    m_slot1RX(modem, false),
+    m_slot2RX(modem, true)
 {
     /* stub */
 }
@@ -56,7 +57,7 @@ void DMRRX::samples(const q15_t* samples, const uint16_t* rssi, const uint8_t* c
         dcd2 = m_slot2RX.processSample(samples[i], rssi[i]);
     }
 
-    io.setDecode(dcd1 || dcd2);
+    m_modem->m_io.setDecode(dcd1 || dcd2);
 }
 
 /* Sets the DMR color code. */

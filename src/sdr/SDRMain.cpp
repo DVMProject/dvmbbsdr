@@ -10,23 +10,20 @@
  *  Copyright (C) 2018,2024,2025 Bryan Biedenkapp, N2PLL
  *
  */
-#include "Globals.h"
+#include "Defines.h"
 #include "common/Log.h"
 #include "common/Utils.h"
-#include "modem/port/PseudoPTYPort.h"
+#include "SDRMain.h"
+#include "SDR.h"
 
-#include <sys/types.h>
-#include <unistd.h>
-#include <signal.h>
-#include <fcntl.h>
-#include <pwd.h>
 #include <cstdio>
-#include <cassert>
-#include <cstdlib>
-#include <cstring>
+#include <cstdarg>
+#include <vector>
+
+#include <signal.h>
 
 // ---------------------------------------------------------------------------
-//	Macros
+//  Macros
 // ---------------------------------------------------------------------------
 
 #define IS(s) (::strcmp(argv[i], s) == 0)
@@ -35,116 +32,52 @@
 //  Globals Variables
 // ---------------------------------------------------------------------------
 
-DVM_STATE m_modemState = STATE_IDLE;
-
-bool m_dmrEnable = true;
-bool m_p25Enable = true;
-bool m_nxdnEnable = true;
-
-bool m_dcBlockerEnable = true;
-bool m_cosLockoutEnable = false;
-
-bool m_duplex = true;
-
-bool m_tx = false;
-bool m_dcd = false;
-
-/* DMR BS */
-dmr::DMRIdleRX dmrIdleRX;
-dmr::DMRRX dmrRX;
-dmr::DMRTX dmrTX;
-
-/* DMR MS-DMO */
-dmr::DMRDMORX dmrDMORX;
-dmr::DMRDMOTX dmrDMOTX;
-
-/* P25 */
-p25::P25RX p25RX;
-p25::P25TX p25TX;
-
-/* NXDN */
-nxdn::NXDNRX nxdnRX;
-nxdn::NXDNTX nxdnTX;
-
-/* Calibration */
-dmr::CalDMR calDMR;
-p25::CalP25 calP25;
-nxdn::CalNXDN calNXDN;
-CalRSSI calRSSI;
-
-/* CW */
-CWIdTX cwIdTX;
-
-/* RS232 and Air Interface I/O */
-modem::SerialPort serial;
-modem::IO io;
-
+int g_signal = 0;
 std::string g_progExe = std::string(__EXE_NAME__);
+std::string g_iniFile = std::string(DEFAULT_CONF_FILE);
 
-std::string m_ptyPort = std::string("/dev/ptmx");
-
-std::string g_logFileName = std::string("dsp.log");
+bool g_foreground = false;
+bool g_killed = false;
 
 bool g_debug = false;
 
-int g_signal = 0;
-bool g_killed = false;
-
-bool g_daemon = false;
-
-extern modem::port::PseudoPTYPort* m_serialPort;
+uint8_t* g_gitHashBytes = nullptr;
 
 // ---------------------------------------------------------------------------
 //  Global Functions
 // ---------------------------------------------------------------------------
 
-void setup()
+/* Internal signal handler. */
+
+static void sigHandler(int signum)
 {
-    serial.start();
+    g_signal = signum;
+    g_killed = true;
 }
 
-void loop()
+/* Helper to print a fatal error message and exit. */
+
+void fatal(const char* msg, ...)
 {
-    serial.process();
-    io.process();
+    char buffer[400U];
+    ::memset(buffer, 0x20U, 400U);
 
-    // The following is for transmitting
-    if (m_dmrEnable && m_modemState == STATE_DMR) {
-        if (m_duplex)
-            dmrTX.process();
-        else
-            dmrDMOTX.process();
-    }
+    va_list vl;
+    va_start(vl, msg);
 
-    if (m_p25Enable && m_modemState == STATE_P25)
-        p25TX.process();
+    ::vsprintf(buffer, msg, vl);
 
-    if (m_nxdnEnable && m_modemState == STATE_NXDN)
-        nxdnTX.process();
+    va_end(vl);
 
-    if (m_modemState == STATE_DMR_DMO_CAL_1K || m_modemState == STATE_DMR_CAL_1K ||
-        m_modemState == STATE_DMR_LF_CAL || m_modemState == STATE_DMR_CAL)
-        calDMR.process();
-
-    if (m_modemState == STATE_P25_CAL_1K || m_modemState == STATE_P25_CAL)
-        calP25.process();
-
-    if (m_modemState == STATE_NXDN_CAL)
-        calNXDN.process();
-
-    if (m_modemState == STATE_CW || m_modemState == STATE_IDLE)
-        cwIdTX.process();
-}
-
-void fatal(const char* message)
-{
-    ::fprintf(stderr, "%s: %s\n", g_progExe.c_str(), message);
+    ::fprintf(stderr, "%s: FATAL PANIC; %s\n", g_progExe.c_str(), buffer);
     exit(EXIT_FAILURE);
 }
 
+/* Helper to pring usage the command line arguments. (And optionally an error.) */
+
 void usage(const char* message, const char* arg)
 {
-    ::fprintf(stdout, "" DESCRIPTION " (built %s)\r\n", __BUILD__);
+    ::fprintf(stdout, "" DESCRIPTION " %s (built %s)\r\n", __VER__, __BUILD__);
     ::fprintf(stdout, "Copyright (c) 2025 Bryan Biedenkapp, N2PLL and DVMProject (https://github.com/dvmproject) Authors.\n");
     ::fprintf(stdout, "Portions Copyright (c) 2015-2021 by Jonathan Naylor, G4KLX and others\n\n");
     if (message != nullptr) {
@@ -154,11 +87,10 @@ void usage(const char* message, const char* arg)
     }
 
     ::fprintf(stdout, 
-        "usage: %s [-bdvh]"
+        "usage: %s [-fdvh]"
         " [--syslog]" 
-        " [-p <PTY port>]"
-        " [-l <log filename>]\n\n"
-        "  -b       background process\n"
+        " [-c <configuration file>]\n\n"
+        "  -f       foreground process\n"
         "\n"
         "  -d       enable debug\n"
         "  -v       show version information\n"
@@ -166,14 +98,14 @@ void usage(const char* message, const char* arg)
         "\n"
         "  --syslog  force logging to syslog\n"
         "\n"
-        "  -p       PTY Port\n"
-        "\n"
-        "  -l       Log Filename\n"
+        "  -c <file> specifies the configuration file to use\n"
         "\n"
         "  --       stop handling options\n",
         g_progExe.c_str());
     exit(EXIT_FAILURE);
 }
+
+/* Helper to validate the command line arguments. */
 
 int checkArgs(int argc, char* argv[])
 {
@@ -193,29 +125,8 @@ int checkArgs(int argc, char* argv[])
             ++p;
             break;
         }
-        else if (IS("-p")) {
-            if ((argc - 1) <= 0)
-                usage("error: %s", "must specify the PTY port");
-            m_ptyPort = std::string(argv[++i]);
-
-            if (m_ptyPort == "")
-                usage("error: %s", "PTY port cannot be blank!");
-
-            p += 2;
-        }
-        else if (IS("-l")) {
-            if ((argc - 1) <= 0)
-                usage("error: %s", "must specify the log filename");
-            g_logFileName = std::string(argv[++i]);
-
-            if (g_logFileName == "")
-                usage("error: %s", "log filename cannot be blank!");
-
-            p += 2;
-        }
-        else if (IS("-b")) {
-            ++p;
-            g_daemon = true;
+        else if (IS("-f")) {
+            g_foreground = true;
         }
         else if (IS("-d")) {
             ++p;
@@ -224,8 +135,18 @@ int checkArgs(int argc, char* argv[])
         else if (IS("--syslog")) {
             g_useSyslog = true;
         }
+        else if (IS("-c")) {
+            if (argc-- <= 0)
+                usage("error: %s", "must specify the configuration file to use");
+            g_iniFile = std::string(argv[++i]);
+
+            if (g_iniFile.empty())
+                usage("error: %s", "configuration file cannot be blank!");
+
+            p += 2;
+        }
         else if (IS("-v")) {
-            ::fprintf(stdout, "" DESCRIPTION " (built %s)\r\n", __BUILD__);
+            ::fprintf(stdout, "" DESCRIPTION " %s (built %s)\r\n", __VER__, __BUILD__);
             ::fprintf(stdout, "Copyright (c) 2022 Bryan Biedenkapp, N2PLL and DVMProject (https://github.com/dvmproject) Authors.\r\n");
             ::fprintf(stdout, "Portions Copyright (c) 2015-2021 by Jonathan Naylor, G4KLX and others\r\n");
             if (argc == 2)
@@ -248,18 +169,18 @@ int checkArgs(int argc, char* argv[])
     return ++p;
 }
 
-static void sigHandler(int signum)
-{
-    g_killed = true;
-    g_signal = signum;
-}
-
 // ---------------------------------------------------------------------------
 //  Program Entry Point
 // ---------------------------------------------------------------------------
 
 int main(int argc, char** argv)
 {
+    g_gitHashBytes = new uint8_t[4U];
+    ::memset(g_gitHashBytes, 0x00U, 4U);
+
+    uint32_t hash = ::strtoul(__GIT_VER_HASH__, 0, 16);
+    SET_UINT32(hash, g_gitHashBytes, 0U);
+
     if (argv[0] != nullptr && *argv[0] != 0)
         g_progExe = std::string(argv[0]);
 
@@ -276,85 +197,33 @@ int main(int argc, char** argv)
         }
     }
 
+    log_stacktrace::SignalHandling sh(g_foreground);
+
     ::signal(SIGINT, sigHandler);
     ::signal(SIGTERM, sigHandler);
     ::signal(SIGHUP, sigHandler);
 
-    // initialize system logging
-    bool ret = ::LogInitialise(".", g_logFileName.c_str(), 1U, 1U);
-    if (!ret) {
-        ::fprintf(stderr, "unable to open the log file\n");
-        return 1;
-    }
-
-    // handle POSIX process forking
-    if (g_daemon) {
-        // create new process
-        pid_t pid = ::fork();
-        if (pid == -1) {
-            ::fprintf(stderr, "%s: Couldn't fork() , exiting\n", g_progExe.c_str());
-            ::LogFinalise();
-            return EXIT_FAILURE;
-        }
-        else if (pid != 0) {
-            ::LogFinalise();
-            exit(EXIT_SUCCESS);
-        }
-
-        // create new session and process group
-        if (::setsid() == -1) {
-            ::fprintf(stderr, "%s: Couldn't setsid(), exiting\n", g_progExe.c_str());
-            ::LogFinalise();
-            return EXIT_FAILURE;
-        }
-
-        // set the working directory to the root directory
-        if (::chdir("/") == -1) {
-            ::fprintf(stderr, "%s: Couldn't cd /, exiting\n", g_progExe.c_str());
-            ::LogFinalise();
-            return EXIT_FAILURE;
-        }
-
-        ::close(STDIN_FILENO);
-        ::close(STDOUT_FILENO);
-        ::close(STDERR_FILENO);
-    }
+    int ret = 0;
 
     do {
         g_signal = 0;
+        g_killed = false;
 
-        {
-            ::LogInfo("" DESCRIPTION " (built %s)", __BUILD__);
-            ::LogInfo("Copyright (c) 2017-2025 Bryan Biedenkapp, N2PLL and DVMProject (https://github.com/dvmproject) Authors.");
-            ::LogInfo("Portions Copyright (c) 2015-2021 by Jonathan Naylor, G4KLX and others");
+        SDR* sdr = new SDR(g_iniFile);
+        ret = sdr->run();
+        delete sdr;
 
-            ::LogInfoEx(LOG_SDR, "DSP is performing initialization and warmup");
-            setup();
+        if (g_signal == SIGINT)
+            ::LogInfoEx(LOG_HOST, "[STOP] dvmbbsdr:main SIGINT");
 
-            ::LogInfoEx(LOG_SDR, "DSP is up and running");
-            while (!g_killed) {
-                loop();
-                ::usleep(1);
-            }
-        }
+        if (g_signal == SIGTERM)
+            ::LogInfoEx(LOG_HOST, "[STOP] dvmbbsdr:main SIGTERM");
 
-        if (g_signal == 2)
-            ::LogInfoEx(LOG_SDR, "Exited on receipt of SIGINT");
-
-        if (g_signal == 15)
-            ::LogInfoEx(LOG_SDR, "Exited on receipt of SIGTERM");
-
-        if (g_signal == 1)
-            ::LogInfoEx(LOG_SDR, "Restarting on receipt of SIGHUP");
-    } while (g_signal == 1);
-
-    ::LogInfoEx(LOG_SDR, "DSP is shutting down");
-
-    if (m_serialPort != nullptr) {
-        m_serialPort->close();
-        delete m_serialPort;
-    }
+        if (g_signal == SIGHUP)
+            ::LogInfoEx(LOG_HOST, "[RSTR] dvmbbsdr:main SIGHUP");
+    } while (g_signal == SIGHUP);
 
     ::LogFinalise();
-    return 0;
+
+    return ret;
 }

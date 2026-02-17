@@ -8,8 +8,8 @@
  *  Copyright (C) 2020 Jonathan Naylor, G4KLX
  *
  */
-#include "Globals.h"
 #include "nxdn/CalNXDN.h"
+#include "modem/Modem.h"
 
 using namespace nxdn;
 
@@ -54,7 +54,8 @@ const uint8_t NXDN_CAL1K[4][49] = {
 
 /* Initializes a new instance of the CalNXDN class. */
 
-CalNXDN::CalNXDN() :
+CalNXDN::CalNXDN(modem::Modem* modem) :
+    m_modem(modem),
     m_transmit(false),
     m_state(NXDNCAL1K_IDLE),
     m_audioSeq(0U)
@@ -67,14 +68,14 @@ CalNXDN::CalNXDN() :
 void CalNXDN::process()
 {
     if (m_transmit) {
-        nxdnTX.setCal(true);
-        nxdnTX.process();
+        m_modem->m_nxdnTX.setCal(true);
+        m_modem->m_nxdnTX.process();
     }
     else {
-        nxdnTX.setCal(false);
+        m_modem->m_nxdnTX.setCal(false);
     }
 
-    uint16_t space = nxdnTX.getSpace();
+    uint16_t space = m_modem->m_nxdnTX.getSpace();
     if (space < 1U)
         return;
 
@@ -84,7 +85,7 @@ void CalNXDN::process()
 
     switch (m_state) {
     case NXDNCAL1K_TX:
-        nxdnTX.writeData(NXDN_CAL1K[m_audioSeq], NXDN_FRAME_LENGTH_BYTES + 1U);
+        m_modem->m_nxdnTX.writeData(NXDN_CAL1K[m_audioSeq], NXDN_FRAME_LENGTH_BYTES + 1U);
         m_audioSeq++;
         if (!m_transmit) {
             m_state = NXDNCAL1K_IDLE;

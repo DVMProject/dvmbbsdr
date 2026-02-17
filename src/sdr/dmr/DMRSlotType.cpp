@@ -7,7 +7,6 @@
  *  Copyright (C) 2015 Jonathan Naylor, G4KLX
  *
  */
-#include "Globals.h"
 #include "dmr/DMRSlotType.h"
 
 using namespace dmr;

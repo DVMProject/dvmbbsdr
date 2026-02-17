@@ -7,9 +7,9 @@
  *  Copyright (C) 2009-2017 Jonathan Naylor, G4KLX
  *
  */
-#include "Globals.h"
 #include "dmr/DMRIdleRX.h"
 #include "dmr/DMRSlotType.h"
+#include "modem/Modem.h"
 #include "Utils.h"
 
 using namespace dmr;
@@ -34,7 +34,8 @@ const uint8_t CONTROL_DATA = 0x40U;
 
 /* Initializes a new instance of the DMRIdleRX class. */
 
-DMRIdleRX::DMRIdleRX() :
+DMRIdleRX::DMRIdleRX(modem::Modem* modem) :
+    m_modem(modem),
     m_bitBuffer(),
     m_buffer(),
     m_bitPtr(0U),
@@ -145,7 +146,7 @@ void DMRIdleRX::processSample(q15_t sample)
                 errs += countBits8((sync[i] & DMR_SYNC_BYTES_MASK[i]) ^ DMR_MS_DATA_SYNC_BYTES[i]);
 
             if (errs <= MAX_SYNC_BYTES_ERRS) {
-                DEBUG3("DMRIdleRX::processSample() data sync found centre/threshold", centre, threshold);
+                m_modem->writeDebug("DMRIdleRX::processSample() data sync found centre/threshold", centre, threshold);
                 m_maxCorr = corr;
                 m_centre = centre;
                 m_threshold = threshold;
@@ -172,7 +173,7 @@ void DMRIdleRX::processSample(q15_t sample)
 
         if (colorCode == m_colorCode && dataType == DT_CSBK) {
             frame[0U] = CONTROL_IDLE | CONTROL_DATA | DT_CSBK;
-            serial.writeDMRData(false, frame, DMR_FRAME_LENGTH_BYTES + 1U);
+            m_modem->m_serial.writeDMRData(false, frame, DMR_FRAME_LENGTH_BYTES + 1U);
         }
 
         m_endPtr = NOENDPTR;

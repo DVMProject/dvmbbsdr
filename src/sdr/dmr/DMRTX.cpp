@@ -10,8 +10,8 @@
  *  Copyright (C) 2022 Bryan Biedenkapp, N2PLL
  *
  */
-#include "Globals.h"
 #include "dmr/DMRSlotType.h"
+#include "modem/Modem.h"
 
 using namespace dmr;
 
@@ -59,7 +59,8 @@ const uint32_t ABORT_COUNT = 6U;
 
 /* Initializes a new instance of the DMRTX class. */
 
-DMRTX::DMRTX() :
+DMRTX::DMRTX(modem::Modem* modem) :
+    m_modem(modem),
     m_fifo(),
     m_modFilter(),
     m_modState(),
@@ -135,11 +136,11 @@ void DMRTX::process()
     }
 
     if (m_poLen > 0U) {
-        if (!m_tx) {
-            io.setTransmit();
+        if (!m_modem->m_tx) {
+            m_modem->m_io.setTransmit();
         }
 
-        uint16_t space = io.getSpace();
+        uint16_t space = m_modem->m_io.getSpace();
 
         while (space > (4U * DMR_RADIO_SYMBOL_LENGTH)) {
             uint8_t c = m_poBuffer[m_poPtr];
@@ -167,7 +168,7 @@ uint8_t DMRTX::writeData1(const uint8_t* data, uint8_t length)
         return RSN_ILLEGAL_LENGTH;
 
     uint16_t space = m_fifo[0U].getSpace();
-    DEBUG3("DMRTX::writeData1() dataLength/fifoLength", length, space);
+    m_modem->writeDebug("DMRTX::writeData1() dataLength/fifoLength", length, space);
     if (space < DMR_FRAME_LENGTH_BYTES) {
         m_fifo[0U].reset();
         return RSN_RINGBUFF_FULL;
@@ -182,7 +183,7 @@ uint8_t DMRTX::writeData1(const uint8_t* data, uint8_t length)
         m_fifo[0U].put(data[i + 1U]);
 
     // Start the TX if it isn't already on
-    if (!m_tx)
+    if (!m_modem->m_tx)
         m_state = DMRTXSTATE_SLOT1;
 
     return RSN_OK;
@@ -196,7 +197,7 @@ uint8_t DMRTX::writeData2(const uint8_t* data, uint8_t length)
         return RSN_ILLEGAL_LENGTH;
 
     uint16_t space = m_fifo[1U].getSpace();
-    DEBUG3("DMRTX::writeData2() dataLength/fifoLength", length, space);
+    m_modem->writeDebug("DMRTX::writeData2() dataLength/fifoLength", length, space);
     if (space < DMR_FRAME_LENGTH_BYTES) {
         m_fifo[1U].reset();
         return RSN_RINGBUFF_FULL;
@@ -211,7 +212,7 @@ uint8_t DMRTX::writeData2(const uint8_t* data, uint8_t length)
         m_fifo[1U].put(data[i + 1U]);
 
     // Start the TX if it isn't already on
-    if (!m_tx)
+    if (!m_modem->m_tx)
         m_state = DMRTXSTATE_SLOT1;
 
     return RSN_OK;
@@ -457,7 +458,7 @@ void DMRTX::createCACH(uint8_t txSlotIndex, uint8_t rxSlotIndex)
 void DMRTX::createCal()
 {
     // 1.2 kHz sine wave generation
-    if (m_modemState == STATE_DMR_CAL) {
+    if (m_modem->m_modemState == STATE_DMR_CAL) {
         for (unsigned int i = 0U; i < DMR_FRAME_LENGTH_BYTES; i++) {
             m_poBuffer[i] = DMR_START_SYNC;
             m_markBuffer[i] = MARK_NONE;
@@ -467,7 +468,7 @@ void DMRTX::createCal()
     }
 
     // 80 Hz square wave generation
-    if (m_modemState == STATE_DMR_LF_CAL) {
+    if (m_modem->m_modemState == STATE_DMR_LF_CAL) {
         for (unsigned int i = 0U; i < 7U; i++) {
             m_poBuffer[i] = 0x55U; // +3, +3, ... pattern
             m_markBuffer[i] = MARK_NONE;
@@ -519,5 +520,5 @@ void DMRTX::writeByte(uint8_t c, uint8_t control)
 
     ::arm_fir_interpolate_q15(&m_modFilter, inBuffer, outBuffer, 4U);
 
-    io.write(STATE_DMR, outBuffer, DMR_RADIO_SYMBOL_LENGTH * 4U, controlBuffer);
+    m_modem->m_io.write(STATE_DMR, outBuffer, DMR_RADIO_SYMBOL_LENGTH * 4U, controlBuffer);
 }

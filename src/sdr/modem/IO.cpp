@@ -10,8 +10,8 @@
  *  Copyright (C) 2017-2026 Bryan Biedenkapp, N2PLL
  *
  */
-#include "Globals.h"
 #include "modem/IO.h"
+#include "modem/Modem.h"
 #include "common/Log.h"
 
 #include <unistd.h>
@@ -144,7 +144,8 @@ static void* modemStatusHelper(void* arg)
 
 /* Initializes a new instance of the IO class. */
 
-IO::IO() :
+IO::IO(modem::Modem* modem) :
+    m_modem(modem),
     m_started(false),
     m_rxBuffer(RX_RINGBUFFER_SIZE),
     m_txBuffer(TX_RINGBUFFER_SIZE),
@@ -169,7 +170,10 @@ IO::IO() :
     m_adcOverflow(0U),
     m_dacOverflow(0U),
     m_watchdog(0U),
-    m_lockout(false)
+    m_lockout(false),
+    m_rxFrequency(DEFAULT_FREQUENCY),
+    m_txFrequency(DEFAULT_FREQUENCY),
+    m_rfPower(0U)
 {
     ::memset(m_rrc_0_2_State, 0x00U, 70U * sizeof(q15_t));
     ::memset(m_boxcar_5_State, 0x00U, 30U * sizeof(q15_t));
@@ -253,10 +257,10 @@ void IO::process()
     if (m_started) {
         // Two seconds timeout
         if (m_watchdog >= 48000U) {
-            if (m_modemState == STATE_DMR || m_modemState == STATE_P25 || m_modemState == STATE_NXDN) {
-                if (m_modemState == STATE_DMR && m_tx)
-                    dmrTX.setStart(false);
-                m_modemState = STATE_IDLE;
+            if (m_modem->m_modemState == STATE_DMR || m_modem->m_modemState == STATE_P25 || m_modem->m_modemState == STATE_NXDN) {
+                if (m_modem->m_modemState == STATE_DMR && m_modem->m_tx)
+                    m_modem->m_dmrTX.setStart(false);
+                m_modem->m_modemState = STATE_IDLE;
                 setMode();
             }
 
@@ -278,13 +282,13 @@ void IO::process()
     }
 
     // use the COS line to lockout the modem
-    if (m_cosLockoutEnable) {
+    if (m_modem->m_cosLockoutEnable) {
         m_lockout = getCOSInt();
     }
 
     // Switch off the transmitter if needed
-    if (m_txBuffer.getData() == 0U && m_tx) {
-        m_tx = false;
+    if (m_txBuffer.getData() == 0U && m_modem->m_tx) {
+        m_modem->m_tx = false;
         setPTTInt(m_pttInvert ? true : false);
     }
 
@@ -311,7 +315,7 @@ void IO::process()
             return;
 
         q15_t dcSamples[RX_BLOCK_SIZE];
-        if (m_dcBlockerEnable) {
+        if (m_modem->m_dcBlockerEnable) {
             q31_t q31Samples[RX_BLOCK_SIZE];
 
             ::arm_q15_to_q31(samples, q31Samples, RX_BLOCK_SIZE);
@@ -331,38 +335,38 @@ void IO::process()
         }
 
         /** Idle Modem State */
-        if (m_modemState == STATE_IDLE) {
+        if (m_modem->m_modemState == STATE_IDLE) {
             /** Project 25 */
-            if (m_p25Enable) {
+            if (m_modem->m_p25Enable) {
                 q15_t c4fmSamples[RX_BLOCK_SIZE];
-                if (m_dcBlockerEnable) {
+                if (m_modem->m_dcBlockerEnable) {
                     ::arm_fir_fast_q15(&m_boxcar_5_Filter, dcSamples, c4fmSamples, RX_BLOCK_SIZE);
                 }
                 else {
                     ::arm_fir_fast_q15(&m_boxcar_5_Filter, samples, c4fmSamples, RX_BLOCK_SIZE);
                 }
 
-                p25RX.samples(c4fmSamples, rssi, RX_BLOCK_SIZE);
+                m_modem->m_p25RX.samples(c4fmSamples, rssi, RX_BLOCK_SIZE);
             }
 
             /** Digital Mobile Radio */
-            if (m_dmrEnable) {
+            if (m_modem->m_dmrEnable) {
                 q15_t c4fmSamples[RX_BLOCK_SIZE];
                 ::arm_fir_fast_q15(&m_rrc_0_2_Filter, samples, c4fmSamples, RX_BLOCK_SIZE);
 
-                if (m_dmrEnable) {
-                    if (m_duplex)
-                        dmrIdleRX.samples(c4fmSamples, RX_BLOCK_SIZE);
+                if (m_modem->m_dmrEnable) {
+                    if (m_modem->m_duplex)
+                        m_modem->m_dmrIdleRX.samples(c4fmSamples, RX_BLOCK_SIZE);
                     else
-                        dmrDMORX.samples(c4fmSamples, rssi, RX_BLOCK_SIZE);
+                        m_modem->m_dmrDMORX.samples(c4fmSamples, rssi, RX_BLOCK_SIZE);
                 }
             }
 
             /** Next Generation Digital Narrowband */
-            if (m_nxdnEnable) {
+            if (m_modem->m_nxdnEnable) {
                 q15_t c4fmSamples[RX_BLOCK_SIZE];
 #if NXDN_BOXCAR_FILTER
-                if (m_dcBlockerEnable) {
+                if (m_modem->m_dcBlockerEnable) {
                     ::arm_fir_fast_q15(&m_boxcar_10_Filter, dcSamples, c4fmSamples, RX_BLOCK_SIZE);
                 }
                 else {
@@ -370,7 +374,7 @@ void IO::process()
                 }
 #else
                 q15_t c4fmRCSamples[RX_BLOCK_SIZE];
-                if (m_dcBlockerEnable) {
+                if (m_modem->m_dcBlockerEnable) {
                     ::arm_fir_fast_q15(&m_nxdn_0_2_Filter, dcSamples, c4fmRCSamples, RX_BLOCK_SIZE);
                 }
                 else {
@@ -379,47 +383,47 @@ void IO::process()
 
                 ::arm_fir_fast_q15(&m_nxdn_ISinc_Filter, c4fmRCSamples, c4fmSamples, RX_BLOCK_SIZE);
 #endif
-                nxdnRX.samples(c4fmSamples, rssi, RX_BLOCK_SIZE);
+                m_modem->m_nxdnRX.samples(c4fmSamples, rssi, RX_BLOCK_SIZE);
             }
         }
-        else if (m_modemState == STATE_DMR) {        // DMR State
+        else if (m_modem->m_modemState == STATE_DMR) {        // DMR State
             /** Digital Mobile Radio */
-            if (m_dmrEnable) {
+            if (m_modem->m_dmrEnable) {
                 q15_t c4fmSamples[RX_BLOCK_SIZE];
                 ::arm_fir_fast_q15(&m_rrc_0_2_Filter, samples, c4fmSamples, RX_BLOCK_SIZE);
 
-                if (m_duplex) {
+                if (m_modem->m_duplex) {
                     // If the transmitter isn't on, use the DMR idle RX to detect the wakeup CSBKs
-                    if (m_tx)
-                        dmrRX.samples(c4fmSamples, rssi, control, RX_BLOCK_SIZE);
+                    if (m_modem->m_tx)
+                        m_modem->m_dmrRX.samples(c4fmSamples, rssi, control, RX_BLOCK_SIZE);
                     else
-                        dmrIdleRX.samples(c4fmSamples, RX_BLOCK_SIZE);
+                        m_modem->m_dmrIdleRX.samples(c4fmSamples, RX_BLOCK_SIZE);
                 }
                 else {
-                    dmrDMORX.samples(c4fmSamples, rssi, RX_BLOCK_SIZE);
+                    m_modem->m_dmrDMORX.samples(c4fmSamples, rssi, RX_BLOCK_SIZE);
                 }
             }
         }
-        else if (m_modemState == STATE_P25) {        // P25 State
+        else if (m_modem->m_modemState == STATE_P25) {        // P25 State
             /** Project 25 */
-            if (m_p25Enable) {
+            if (m_modem->m_p25Enable) {
                 q15_t c4fmSamples[RX_BLOCK_SIZE];
-                if (m_dcBlockerEnable) {
+                if (m_modem->m_dcBlockerEnable) {
                     ::arm_fir_fast_q15(&m_boxcar_5_Filter, dcSamples, c4fmSamples, RX_BLOCK_SIZE);
                 }
                 else {
                     ::arm_fir_fast_q15(&m_boxcar_5_Filter, samples, c4fmSamples, RX_BLOCK_SIZE);
                 }
 
-                p25RX.samples(c4fmSamples, rssi, RX_BLOCK_SIZE);
+                m_modem->m_p25RX.samples(c4fmSamples, rssi, RX_BLOCK_SIZE);
             }
         }
-        else if (m_modemState == STATE_NXDN) {       // NXDN State
+        else if (m_modem->m_modemState == STATE_NXDN) {       // NXDN State
             /** Next Generation Digital Narrowband */
-            if (m_nxdnEnable) {
+            if (m_modem->m_nxdnEnable) {
                 q15_t c4fmSamples[RX_BLOCK_SIZE];
 #if NXDN_BOXCAR_FILTER
-                if (m_dcBlockerEnable) {
+                if (m_modem->m_dcBlockerEnable) {
                     ::arm_fir_fast_q15(&m_boxcar_10_Filter, dcSamples, c4fmSamples, RX_BLOCK_SIZE);
                 }
                 else {
@@ -427,7 +431,7 @@ void IO::process()
                 }
 #else
                 q15_t c4fmRCSamples[RX_BLOCK_SIZE];
-                if (m_dcBlockerEnable) {
+                if (m_modem->m_dcBlockerEnable) {
                     ::arm_fir_fast_q15(&m_nxdn_0_2_Filter, dcSamples, c4fmRCSamples, RX_BLOCK_SIZE);
                 }
                 else {
@@ -436,11 +440,11 @@ void IO::process()
 
                 ::arm_fir_fast_q15(&m_nxdn_ISinc_Filter, c4fmRCSamples, c4fmSamples, RX_BLOCK_SIZE);
 #endif
-                nxdnRX.samples(c4fmSamples, rssi, RX_BLOCK_SIZE);
+                m_modem->m_nxdnRX.samples(c4fmSamples, rssi, RX_BLOCK_SIZE);
             }
         }
-        else if (m_modemState == STATE_RSSI_CAL) {
-            calRSSI.samples(rssi, RX_BLOCK_SIZE);
+        else if (m_modem->m_modemState == STATE_RSSI_CAL) {
+            m_modem->m_calRSSI.samples(rssi, RX_BLOCK_SIZE);
         }
     }
 }
@@ -456,8 +460,8 @@ void IO::write(DVM_STATE mode, q15_t* samples, uint16_t length, const uint8_t* c
         return;
 
     // Switch the transmitter on if needed
-    if (!m_tx) {
-        m_tx = true;
+    if (!m_modem->m_tx) {
+        m_modem->m_tx = true;
         setPTTInt(m_pttInvert ? false : true);
     }
 
@@ -504,10 +508,10 @@ uint16_t IO::getSpace() const
 
 void IO::setDecode(bool dcd)
 {
-    if (dcd != m_dcd)
+    if (dcd != m_modem->m_dcd)
         setCOSInt(dcd ? true : false);
 
-    m_dcd = dcd;
+    m_modem->m_dcd = dcd;
 }
 
 /* */
@@ -521,15 +525,15 @@ void IO::setADCDetection(bool detect)
 
 void IO::setMode()
 {
-    DVM_STATE relativeState = m_modemState;
+    DVM_STATE relativeState = m_modem->m_modemState;
 
-    if (serial.isCalState(m_modemState)) {
-        relativeState = serial.calRelativeState(m_modemState);
+    if (m_modem->m_serial.isCalState(m_modem->m_modemState)) {
+        relativeState = m_modem->m_serial.calRelativeState(m_modem->m_modemState);
     }
 
-    DEBUG3("IO::setMode() setting modem state", m_modemState, relativeState);
+    m_modem->writeDebug("IO::setMode() setting modem state", m_modem->m_modemState, relativeState);
 
-    DEBUG4("IO::setMode() setting lights", relativeState == STATE_DMR, relativeState == STATE_P25, relativeState == STATE_NXDN);
+    m_modem->writeDebug("IO::setMode() setting lights", relativeState == STATE_DMR, relativeState == STATE_P25, relativeState == STATE_NXDN);
     setDMRInt(relativeState == STATE_DMR);
     setP25Int(relativeState == STATE_P25);
     setNXDNInt(relativeState == STATE_NXDN);
@@ -540,12 +544,12 @@ void IO::setMode()
 void IO::setTransmit()
 {
     // Switch the transmitter on if needed
-    if (!m_tx) {
-        m_tx = true;
+    if (!m_modem->m_tx) {
+        m_modem->m_tx = true;
         setPTTInt(m_pttInvert ? false : true);
     }
     else {
-        m_tx = false;
+        m_modem->m_tx = false;
         setPTTInt(m_pttInvert ? true : false);
     }
 }
@@ -622,6 +626,68 @@ void IO::setRXLevel(uint8_t rxLevel)
 
     if (m_rxInvert)
         m_rxLevel = -m_rxLevel;
+}
+
+/* Sets the RF parameters. */
+
+uint8_t IO::setRFParams(uint32_t rxFreq, uint32_t txFreq, uint8_t rfPower)
+{
+    m_rfPower = rfPower;
+
+    // check frequency ranges
+    if (!(
+            /* 136 - 174 mhz */
+            ((rxFreq >= VHF_MIN) && (rxFreq < VHF_MAX)) || ((txFreq >= VHF_MIN) && (txFreq < VHF_MAX)) ||
+            /* 216 - 225 mhz */
+            ((rxFreq >= VHF_220_MIN) && (rxFreq < VHF_220_MAX)) || ((txFreq >= VHF_220_MIN) && (txFreq < VHF_220_MAX)) ||
+            /* 380 - 431 mhz */
+            ((rxFreq >= UHF_380_MIN) && (rxFreq < UHF_380_MAX)) || ((txFreq >= UHF_380_MIN) && (txFreq < UHF_380_MAX)) ||
+            /* 431 - 450 mhz */
+            ((rxFreq >= UHF_1_MIN) && (rxFreq < UHF_1_MAX)) || ((txFreq >= UHF_1_MIN) && (txFreq < UHF_1_MAX)) ||
+            /* 450 - 470 mhz */
+            ((rxFreq >= UHF_2_MIN) && (rxFreq < UHF_2_MAX)) || ((txFreq >= UHF_2_MIN) && (txFreq < UHF_2_MAX)) ||
+            /* 470 - 520 mhz */
+            ((rxFreq >= UHF_T_MIN) && (rxFreq < UHF_T_MAX)) || ((txFreq >= UHF_T_MIN) && (txFreq < UHF_T_MAX)) ||
+            /* 842 - 900 mhz */
+            ((rxFreq >= UHF_800_MIN) && (rxFreq < UHF_800_MAX)) || ((txFreq >= UHF_800_MIN) && (txFreq < UHF_800_MAX)) ||
+            /* 900 - 950 mhz */
+            ((rxFreq >= UHF_900_MIN) && (rxFreq < UHF_900_MAX)) || ((txFreq >= UHF_900_MIN) && (txFreq < UHF_900_MAX))
+        ))
+        return RSN_INVALID_REQUEST;
+
+    m_rxFrequency = rxFreq;
+    m_txFrequency = txFreq;
+
+    m_modem->writeDebug("IO::setRFParams() setting RF params", m_rxFrequency, m_txFrequency, m_rfPower);
+
+    return RSN_OK;
+}
+
+/* Sets the RF adjustment parameters. */
+
+void IO::setRFAdjust(int8_t dmrDiscBWAdj, int8_t p25DiscBWAdj, int8_t nxdnDiscBWAdj, int8_t dmrPostBWAdj, int8_t p25PostBWAdj, int8_t nxdnPostBWADJ)
+{
+    m_dmrDiscBWAdj = dmrDiscBWAdj;
+    m_p25DiscBWAdj = p25DiscBWAdj;
+    m_nxdnDiscBWAdj = nxdnDiscBWAdj;
+    m_dmrPostBWAdj = dmrPostBWAdj;
+    m_p25PostBWAdj = p25PostBWAdj;
+    m_nxdnPostBWAdj = nxdnPostBWADJ;
+
+    m_modem->writeDebug("IO::setRFAdjust() RF adjustment, discBW", dmrDiscBWAdj, p25DiscBWAdj, nxdnDiscBWAdj);
+    m_modem->writeDebug("IO::setRFAdjust() RF adjustment, postBW", dmrPostBWAdj, p25PostBWAdj, nxdnPostBWADJ);
+}
+
+/* Sets the RF AFC parameters. */
+
+void IO::setAFCParams(bool afcEnable, uint8_t afcKI, uint8_t afcKP, uint8_t afcRange)
+{
+    m_afcEnable = afcEnable;
+    m_afcKI = afcKI;
+    m_afcKP = afcKP;
+    m_afcRange = afcRange;
+
+    m_modem->writeDebug("IO::setAFCParams() AFC params", afcEnable, afcKI, afcKP, afcRange);
 }
 
 /* Helper to get the state of the ADC and DAC overflow flags. */

@@ -29,10 +29,10 @@
 // ---------------------------------------------------------------------------
 
 #undef __PROG_NAME__
-#define __PROG_NAME__ "Digital Voice Modem DSP"
+#define __PROG_NAME__ "Digital Voice Modem SDR"
 #define __NET_NAME__ "DVM_DMR_P25"
 #undef __EXE_NAME__
-#define __EXE_NAME__ "dvm-firmware"
+#define __EXE_NAME__ "dvmbbsdr"
 
 #define DSP_FW_API 
 
@@ -86,5 +86,11 @@
 #define DESCRIPTION        __PROG_NAME__ " (" DESCR_DMR DESCR_P25 DESCR_NXDN DESCR_OSC DESCR_RSSI "CW Id)"
 
 #define CPU_TYPE_NATIVE_SDR 0xF0U
+
+// ---------------------------------------------------------------------------
+//  Class Prototypes
+// ---------------------------------------------------------------------------
+
+namespace modem { class DSP_FW_API Modem; }
 
 #endif // __DEFINES_H__
