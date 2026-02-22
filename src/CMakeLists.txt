@@ -22,8 +22,33 @@ target_include_directories(common PRIVATE ${OPENSSL_INCLUDE_DIR} ${LIBDW_INCLUDE
 #
 include(src/sdr/CMakeLists.txt)
 add_executable(dvmbbsdr ${common_INCLUDE} ${dvmsdr_SRC})
-target_link_libraries(dvmbbsdr PRIVATE common ${OPENSSL_LIBRARIES} ${LIBDW_LIBRARY} Threads::Threads util)
-target_include_directories(dvmbbsdr PRIVATE ${OPENSSL_INCLUDE_DIR} ${LIBDW_INCLUDE_DIR} src src/sdr)
+
+target_link_libraries(dvmbbsdr PRIVATE common ${OPENSSL_LIBRARIES} ${LIBDW_LIBRARY} 
+    ${Boost_LIBRARIES} 
+    ${GNURADIO_PMT_LIBRARIES} 
+    ${GNURADIO_RUNTIME_LIBRARIES} 
+    ${GNURADIO_FILTER_LIBRARIES} 
+    ${GNURADIO_DIGITAL_LIBRARIES} 
+    ${GNURADIO_ANALOG_LIBRARIES} 
+    ${GNURADIO_AUDIO_LIBRARIES} 
+    ${GNURADIO_UHD_LIBRARIES} 
+    ${UHD_LIBRARIES} 
+    ${GNURADIO_BLOCKS_LIBRARIES} 
+    ${GNURADIO_OSMOSDR_LIBRARIES} 
+    gnuradio::gnuradio-analog 
+    gnuradio::gnuradio-blocks 
+    gnuradio::gnuradio-digital 
+    gnuradio::gnuradio-filter 
+    gnuradio::gnuradio-pmt 
+    Threads::Threads 
+    util)
+
+target_include_directories(dvmbbsdr PRIVATE ${OPENSSL_INCLUDE_DIR} ${LIBDW_INCLUDE_DIR} 
+    ${Boost_INCLUDE_DIRS} 
+    ${GNURADIO_RUNTIME_INCLUDE_DIRS} 
+    ${GNURADIO_OSMOSDR_INCLUDE_DIRS} 
+    src 
+    src/sdr)
 
 set(CPACK_SET_DESTDIR true)
 set(CPACK_PACKAGING_INSTALL_PREFIX "/usr/local")
