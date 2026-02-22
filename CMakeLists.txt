@@ -18,6 +18,8 @@ list(INSERT CMAKE_MODULE_PATH 0 ${CMAKE_SOURCE_DIR}/cmake)
 set(CMAKE_C_COMPILER /usr/bin/gcc CACHE STRING "C compiler")
 set(CMAKE_CXX_COMPILER /usr/bin/g++ CACHE STRING "C++ compiler")
 
+set(CMAKE_CXX_STANDARD 17)
+
 # detect and set architecture
 set(ARCH amd64)
 
@@ -124,7 +126,7 @@ endif (OpenSSL_FOUND)
 
 # GnuRadio (gnuradio-dev)
 include(FindPkgConfig)
-find_package(Gnuradio REQUIRED)
+find_package(Gnuradio 3.10 REQUIRED)
 include(GrVersion)
 
 set(GR_REQUIRED_COMPONENTS RUNTIME ANALOG BLOCKS DIGITAL FILTER FFT PMT)
