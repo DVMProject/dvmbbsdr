@@ -120,6 +120,7 @@ int SDR::run()
     ::LogInfo(__BANNER__ "\r\n" "" DESCRIPTION " " __VER__ " (built " __BUILD__ ")\r\n" \
         "Copyright (c) 2025-2026 Bryan Biedenkapp, N2PLL and DVMProject (https://github.com/dvmproject) Authors.\r\n" \
         "Portions Copyright (c) 2015-2021 by Jonathan Naylor, G4KLX and others\r\n" \
+        HIGHLY_UNNECESSARY_DISCLAIMER_FOR_THE_MENTAL "\r\n" \
         ">> SDR Daemon\r\n");
 
     // read base parameters from configuration

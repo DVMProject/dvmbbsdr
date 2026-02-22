@@ -78,8 +78,9 @@ void fatal(const char* msg, ...)
 void usage(const char* message, const char* arg)
 {
     ::fprintf(stdout, "" DESCRIPTION " %s (built %s)\r\n", __VER__, __BUILD__);
-    ::fprintf(stdout, "Copyright (c) 2025 Bryan Biedenkapp, N2PLL and DVMProject (https://github.com/dvmproject) Authors.\n");
-    ::fprintf(stdout, "Portions Copyright (c) 2015-2021 by Jonathan Naylor, G4KLX and others\n\n");
+    ::fprintf(stdout, "Copyright (c) 2026 Bryan Biedenkapp, N2PLL and DVMProject (https://github.com/dvmproject) Authors.\n");
+    ::fprintf(stdout, "Portions Copyright (c) 2015-2021 by Jonathan Naylor, G4KLX and others\n");
+    ::fprintf(stdout, HIGHLY_UNNECESSARY_DISCLAIMER_FOR_THE_MENTAL "\n\n");
     if (message != nullptr) {
         ::fprintf(stderr, "%s: ", g_progExe.c_str());
         ::fprintf(stderr, message, arg);
@@ -147,8 +148,9 @@ int checkArgs(int argc, char* argv[])
         }
         else if (IS("-v")) {
             ::fprintf(stdout, "" DESCRIPTION " %s (built %s)\r\n", __VER__, __BUILD__);
-            ::fprintf(stdout, "Copyright (c) 2022 Bryan Biedenkapp, N2PLL and DVMProject (https://github.com/dvmproject) Authors.\r\n");
+            ::fprintf(stdout, "Copyright (c) 2026 Bryan Biedenkapp, N2PLL and DVMProject (https://github.com/dvmproject) Authors.\r\n");
             ::fprintf(stdout, "Portions Copyright (c) 2015-2021 by Jonathan Naylor, G4KLX and others\r\n");
+            ::fprintf(stdout, HIGHLY_UNNECESSARY_DISCLAIMER_FOR_THE_MENTAL "\n\n");
             if (argc == 2)
                 exit(EXIT_SUCCESS);
         }
