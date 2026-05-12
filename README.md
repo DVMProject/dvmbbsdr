@@ -1,6 +1,6 @@
 # Digital Voice Modem SDR
 
-## NOTE: THIS PROJECT IS IN ITS INFANCY, AND WILL LIKELY HAVE PROBLEMS OR MAY STRAIGHT NOT FUNCTION, IF YOU CONTINUE, HEED THESE WORDS: THERE BE DRAGONS.
+## NOTE: THIS PROJECT IS EXTREMELY ALPHA, AND WILL LIKELY HAVE PROBLEMS OR MAY STRAIGHT NOT FUNCTION, IF YOU CONTINUE, HEED THESE WORDS: THERE BE DRAGONS.
 
 The DVM SDR provides the SDR implementation of a mixed-mode DMR, P25 and/or NXDN or dedicated-mode DMR, P25 or NXDN repeater system. The SDR; is the portion of a complete Over-The-Air modem implementation that connects directly to an appropriate SDR and performs the actual reception and creation of the digitial waveforms.
 
@@ -56,4 +56,3 @@ If you want detailed stacktrace output on a crash, for compilation ensure `libdw
 ## License
 
 This project is licensed under the GPLv2 License - see the [LICENSE.md](LICENSE.md) file for details. Use of this project is intended, for amateur and/or educational use ONLY. Any other use is at the risk of user and all commercial purposes is strictly discouraged.
-
