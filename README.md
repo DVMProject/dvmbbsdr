@@ -34,7 +34,7 @@ If you want detailed stacktrace output on a crash, for compilation ensure `libdw
     1. Tarball Install
         1. Run build finalization.
         ```
-        dvdvmbbsdrmhost/build # make strip
+        dvmbbsdr/build # make strip
         dvmbbsdr/build # make tarball
         ```
         2. After `make tarball` completes file named `dvmbbsdrt_R04Gxx_<arch>.tar.gz` should be created. Run the following command to install:
