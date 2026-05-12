@@ -12,6 +12,7 @@
  */
 #include "modem/IO.h"
 #include "modem/Modem.h"
+#include "radio/RadioManager.h"
 #include "common/Log.h"
 
 #include <unistd.h>
@@ -112,6 +113,9 @@ IO::IO(modem::Modem* modem) :
     m_threadStatus(),
     m_audioBufTx(),
     m_audioBufRx(),
+    m_audioBufTxIQ(),
+    m_audioBufRxIQ(),
+    m_modulationMode(0U),
     m_abort(false),
     m_cosPrev(false),
     m_cosInt(false),
@@ -514,26 +518,46 @@ void IO::interrupt()
     while (m_txBuffer.get(sample, control)) {
         sample *= 5; // amplify by 12dB
 
-        if (m_audioBufTx.size() >= 720) {
-            /*
-            ** bryanb: because dvmbbsdr currently creates FM modulated stream for now --
-            **  this function is where we would transmit the modulated carrier for a specific modem;
-            **  when this can send modulated I/Q we will likely need to change this
-            ** TODO TODO TODO
-            */
+        if (m_modulationMode == static_cast<uint8_t>(radio::ModulationMode::IQ_CQPSK)) {
+            // IQ mode: accumulate as complex<int16_t> samples.
+            // The real part carries the baseband symbol value; imaginary part is zero until
+            // a CQPSK protocol engine populates it directly (future work, step 6).
+            if (m_audioBufTxIQ.size() >= 720) {
+                uint8_t sampleBuffer[720 * sizeof(std::complex<int16_t>)];
+                ::memset(sampleBuffer, 0, sizeof(sampleBuffer));
+                ::memcpy(sampleBuffer, m_audioBufTxIQ.data(), 720 * sizeof(std::complex<int16_t>));
 
-            uint8_t sampleBuffer[720 * sizeof(short)];
-            ::memset(sampleBuffer, 0, 720 * sizeof(short));
-            ::memcpy(sampleBuffer, (unsigned char*)m_audioBufTx.data(), 720 * sizeof(short));
+                m_modem->transmitIQSamples(sampleBuffer, 720 * sizeof(std::complex<int16_t>));
+                ::usleep(9600 * 3);
 
-            m_modem->transmitFMSamples(sampleBuffer, 720 * sizeof(short));
-            ::usleep(9600 * 3);
-            
-            m_audioBufTx.erase(m_audioBufTx.begin(), m_audioBufTx.begin() + 720);
-            m_audioBufTx.push_back((short)sample);
+                m_audioBufTxIQ.erase(m_audioBufTxIQ.begin(), m_audioBufTxIQ.begin() + 720);
+                m_audioBufTxIQ.push_back(std::complex<int16_t>(static_cast<int16_t>(sample), 0));
+            } else {
+                m_audioBufTxIQ.push_back(std::complex<int16_t>(static_cast<int16_t>(sample), 0));
+            }
+        } else {
+            // FM mode: accumulate as real short samples and transmit as FM audio stream.
+            if (m_audioBufTx.size() >= 720) {
+                /*
+                ** bryanb: because dvmbbsdr currently creates FM modulated stream for now --
+                **  this function is where we would transmit the modulated carrier for a specific modem;
+                **  when this can send modulated I/Q we will likely need to change this
+                ** TODO TODO TODO
+                */
+
+                uint8_t sampleBuffer[720 * sizeof(short)];
+                ::memset(sampleBuffer, 0, 720 * sizeof(short));
+                ::memcpy(sampleBuffer, (unsigned char*)m_audioBufTx.data(), 720 * sizeof(short));
+
+                m_modem->transmitFMSamples(sampleBuffer, 720 * sizeof(short));
+                ::usleep(9600 * 3);
+
+                m_audioBufTx.erase(m_audioBufTx.begin(), m_audioBufTx.begin() + 720);
+                m_audioBufTx.push_back((short)sample);
+            } else {
+                m_audioBufTx.push_back((short)sample);
+            }
         }
-        else
-            m_audioBufTx.push_back((short)sample);
     }
     ::pthread_mutex_unlock(&m_txLock);
    
@@ -614,6 +638,9 @@ uint8_t IO::setRFParams(uint32_t rxFreq, uint32_t txFreq, uint8_t rfPower)
     m_txFrequency = txFreq;
 
     m_modem->setRFChannel(rxFreq, txFreq, rfPower);
+
+    // Cache modulation mode so interrupt()/interruptRx() can branch without locking RadioManager.
+    m_modulationMode = static_cast<uint8_t>(radio::RadioManager::instance().getChannelMode(m_modem->m_modemId));
 
     ::LogInfoEx(LOG_SDR, "Modem %u (%s) RX FREQ: %u TX FREQ: %u PWR: %u", m_modem->m_modemId, m_modem->m_modemPty.c_str(), m_rxFrequency, m_txFrequency, m_rfPower);
 
@@ -877,31 +904,53 @@ void* IO::txThreadHelper(void* arg)
 
 void IO::interruptRx()
 {
-    uint16_t sample = DC_OFFSET;
     uint8_t control = MARK_NONE;
 
-    /*
-    ** bryanb: because dvmbbsdr currently handles a FM modulated stream for now --
-    **  this function is where we would receive the demodulated carrier for a specific modem
-    ** TODO TODO TODO
-    */
+    if (m_modulationMode == static_cast<uint8_t>(radio::ModulationMode::IQ_CQPSK)) {
+        /*
+        ** IQ mode: receive complex I/Q samples from the SDR path.
+        ** Samples are stored in m_audioBufRxIQ as complex<int16_t> pairs.
+        ** Note: m_rxBuffer is NOT populated in IQ mode. Protocol engine processing of
+        ** IQ samples requires CQPSK demodulation support (future work).
+        */
+        uint8_t* samples = nullptr;
+        int size = m_modem->readIQSamples(samples);
+        if (size < 1)
+            return;
 
-    uint8_t* samples = nullptr;
-    int size = m_modem->readFMSamples(samples);
-    if (size < 1)
-        return;
+        ::pthread_mutex_lock(&m_rxLock);
+        const int stride = static_cast<int>(sizeof(std::complex<int16_t>));
+        for (int i = 0; i + stride <= size; i += stride) {
+            std::complex<int16_t> iqSample;
+            ::memcpy(&iqSample, samples + i, static_cast<size_t>(stride));
+            if (m_audioBufRxIQ.size() >= 4096U)
+                m_audioBufRxIQ.erase(m_audioBufRxIQ.begin());
+            m_audioBufRxIQ.push_back(iqSample);
+        }
+        ::pthread_mutex_unlock(&m_rxLock);
+    } else {
+        /*
+        ** FM mode: receive FM-demodulated real audio samples from the SDR path.
+        ** bryanb: because dvmbbsdr currently handles a FM modulated stream for now --
+        **  this function is where we would receive the demodulated carrier for a specific modem
+        ** TODO TODO TODO
+        */
+        uint8_t* samples = nullptr;
+        int size = m_modem->readFMSamples(samples);
+        if (size < 1)
+            return;
 
-    ::pthread_mutex_lock(&m_rxLock);
-    uint16_t space = m_rxBuffer.getSpace();
+        ::pthread_mutex_lock(&m_rxLock);
 
-    for (int i = 0; i < size; i += 2) {
-        short sample = 0;
-        ::memcpy(&sample, (uint8_t*)samples + i, sizeof(short));
+        for (int i = 0; i < size; i += 2) {
+            short sample = 0;
+            ::memcpy(&sample, (uint8_t*)samples + i, sizeof(short));
 
-        m_rxBuffer.put((uint16_t)sample, control);
-        m_rssiBuffer.put(3U);
+            m_rxBuffer.put((uint16_t)sample, control);
+            m_rssiBuffer.put(3U);
+        }
+        ::pthread_mutex_unlock(&m_rxLock);
     }
-    ::pthread_mutex_unlock(&m_rxLock);
 }
 
 /*  */

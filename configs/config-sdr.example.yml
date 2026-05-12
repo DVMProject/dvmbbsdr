@@ -122,6 +122,10 @@ modems:
         # Optional explicit split assignment. Useful when RX SDR is receive-only (for example RTL-SDR).
         #rxDevice: 0
         #txDevice: 1
+        # Modulation mode for this channel.
+        #   FM_C4FM  - FM + 4FSK baseband (DMR, P25 Phase 1, NXDN). Default.
+        #   IQ_CQPSK - Direct I/Q complex path (P25 Phase 2 CQPSK). Requires TX-capable SDR.
+        modulationMode: FM_C4FM
         # Optional static channel metadata (for planning/observability).
         name: "channel-a"
     - protocol:
@@ -140,6 +144,10 @@ modems:
         # Optional explicit split assignment. Useful when RX SDR is receive-only (for example RTL-SDR).
         #rxDevice: 0
         #txDevice: 1
+        # Modulation mode for this channel.
+        #   FM_C4FM  - FM + 4FSK baseband (DMR, P25 Phase 1, NXDN). Default.
+        #   IQ_CQPSK - Direct I/Q complex path (P25 Phase 2 CQPSK). Requires TX-capable SDR.
+        modulationMode: FM_C4FM
         # Optional static channel metadata (for planning/observability).
         name: "channel-b"
 

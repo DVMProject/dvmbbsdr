@@ -259,3 +259,17 @@ void Modem::transmitFMSamples(const uint8_t* samples, size_t length)
 {
     radio::RadioManager::instance().enqueueTx(m_modemId, samples, length);
 }
+
+/* Read IQ samples queued for reception. */
+
+int Modem::readIQSamples(uint8_t*& samples)
+{
+    return radio::RadioManager::instance().dequeueIQRx(m_modemId, samples);
+}
+
+/* Helper to handle transmitting I/Q modulated samples. */
+
+void Modem::transmitIQSamples(const uint8_t* samples, size_t length)
+{
+    radio::RadioManager::instance().enqueueIQTx(m_modemId, samples, length);
+}

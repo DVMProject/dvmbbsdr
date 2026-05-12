@@ -237,6 +237,25 @@ namespace modem
          * @param length Length of buffer.
          */
         void transmitFMSamples(const uint8_t* samples, size_t length);
+
+        /**
+         * @brief Read I/Q samples queued for reception (IQ_CQPSK mode).
+         *
+         * The returned buffer contains interleaved int16_t I,Q pairs (4 bytes per sample).
+         *
+         * @param[out] samples Buffer to store the received I/Q samples.
+         * @return int Number of bytes read.
+         */
+        int readIQSamples(uint8_t*& samples);
+        /**
+         * @brief Helper to handle transmitting I/Q modulated samples (IQ_CQPSK mode).
+         *
+         * The buffer must contain interleaved int16_t I,Q pairs (4 bytes per sample).
+         *
+         * @param samples Buffer containing interleaved I,Q samples.
+         * @param length Length of buffer in bytes.
+         */
+        void transmitIQSamples(const uint8_t* samples, size_t length);
     };
 } // namespace modem
 

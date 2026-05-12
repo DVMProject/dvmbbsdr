@@ -29,6 +29,25 @@
 namespace radio
 {
     // ---------------------------------------------------------------------------
+    //  Constants
+    // ---------------------------------------------------------------------------
+
+    /**
+     * @brief Modulation mode for a modem RF channel.
+     *
+     * FM_C4FM: Conventional FM with 4-level FSK baseband (DMR, P25 Phase 1, NXDN).
+     *   The GNU Radio path uses frequency_modulator_fc on TX and quadrature_demod_cf on RX.
+     *
+     * IQ_CQPSK: Direct complex I/Q path for phase-modulated signals (e.g. P25 Phase 2 CQPSK).
+     *   The GNU Radio path passes gr_complex samples directly to/from the SDR, bypassing
+     *   FM modulation and demodulation. Protocol engines are responsible for all baseband DSP.
+     */
+    enum class ModulationMode : uint8_t {
+        FM_C4FM  = 0U,  ///< FM + 4FSK baseband (default)
+        IQ_CQPSK = 1U,  ///< Direct I/Q complex path (P25 Phase 2, etc.)
+    };
+
+    // ---------------------------------------------------------------------------
     //  Class Declaration
     // ---------------------------------------------------------------------------
     
@@ -87,6 +106,34 @@ namespace radio
          * @return Number of bytes available in samples.
          */
         int dequeueRx(uint8_t modemId, uint8_t*& samples);
+
+        /**
+         * @brief Queues modem-domain I/Q TX samples for SDR transmission (IQ_CQPSK mode).
+         *
+         * The buffer must contain interleaved int16_t I,Q pairs (4 bytes per sample).
+         *
+         * @param modemId 1-based modem identifier.
+         * @param samples Pointer to interleaved int16_t I,Q sample buffer.
+         * @param length Buffer length in bytes (must be a multiple of 4).
+         */
+        void enqueueIQTx(uint8_t modemId, const uint8_t* samples, size_t length);
+        /**
+         * @brief Dequeues modem-domain I/Q RX samples from SDR path (IQ_CQPSK mode).
+         *
+         * The returned buffer contains interleaved int16_t I,Q pairs (4 bytes per sample).
+         *
+         * @param modemId 1-based modem identifier.
+         * @param[out] samples Pointer to contiguous interleaved I,Q sample data owned by runtime.
+         * @return Number of bytes available in samples.
+         */
+        int dequeueIQRx(uint8_t modemId, uint8_t*& samples);
+
+        /**
+         * @brief Returns the configured modulation mode for a modem channel.
+         * @param modemId 1-based modem identifier.
+         * @return ModulationMode The modulation mode for the channel, or FM_C4FM if not found.
+         */
+        ModulationMode getChannelMode(uint8_t modemId);
 
     private:
         /**

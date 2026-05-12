@@ -25,8 +25,11 @@
 #include <osmosdr/sink.h>
 #include <osmosdr/source.h>
 
+#include <gnuradio/gr_complex.h>
+
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -51,14 +54,22 @@ namespace {
      */
     struct ChannelQueue {
         std::mutex mtx;
+
+        // FM path: real int16_t samples (12-bit unsigned range, matching IO ADC/DAC convention)
         std::deque<int16_t> rx;
         std::deque<int16_t> tx;
+
+        // IQ path: complex float samples (IQ_CQPSK mode)
+        std::deque<gr_complex> rxIQ;
+        std::deque<gr_complex> txIQ;
 
         uint32_t rxFreq = 0U;
         uint32_t txFreq = 0U;
         uint8_t rfPower = 0U;
         uint32_t rxDeviceIndex = 0U;
         uint32_t txDeviceIndex = 0U;
+
+        radio::ModulationMode mode = radio::ModulationMode::FM_C4FM;
     };
 
     /**
@@ -114,6 +125,60 @@ namespace {
         explicit QueueSink(std::shared_ptr<ChannelQueue> queue) :
             gr::sync_block("dvmbb_rx_queue_sink",
                            gr::io_signature::make(1, 1, sizeof(float)),
+                           gr::io_signature::make(0, 0, 0)),
+            m_queue(std::move(queue))
+        {
+            /* stub */
+        }
+
+        std::shared_ptr<ChannelQueue> m_queue;
+    };
+
+    /**
+     * @brief GNU Radio sync block to consume complex RX I/Q samples from a flowgraph and push to a modem IQ queue.
+     * Used in IQ_CQPSK modulation mode; receives gr_complex samples directly from the channelizer.
+     */
+    class QueueSinkIQ : public gr::sync_block {
+    public:
+        typedef std::shared_ptr<QueueSinkIQ> sptr;
+
+        /**
+         * @brief Factory method to create a new QueueSinkIQ instance.
+         * @param queue Shared pointer to the channel queue to push RX IQ samples into.
+         * @returns Shared pointer to the created QueueSinkIQ instance.
+         */
+        static sptr make(std::shared_ptr<ChannelQueue> queue)
+        {
+            return gnuradio::get_initial_sptr(new QueueSinkIQ(std::move(queue)));
+        }
+
+        /**
+         * @brief Consumes complex samples from the flowgraph and pushes to the channel IQ queue.
+         */
+        int work(int noutput_items, gr_vector_const_void_star& input_items,
+            gr_vector_void_star& output_items) override
+        {
+            (void)output_items;
+
+            const auto* in = static_cast<const gr_complex*>(input_items[0]);
+            std::lock_guard<std::mutex> lock(m_queue->mtx);
+
+            for (int i = 0; i < noutput_items; ++i) {
+                if (m_queue->rxIQ.size() >= kQueueCapSamples)
+                    m_queue->rxIQ.pop_front();
+                m_queue->rxIQ.push_back(in[i]);
+            }
+
+            return noutput_items;
+        }
+
+    private:
+        /**
+         * @brief Initializes a new instance of the QueueSinkIQ class.
+         */
+        explicit QueueSinkIQ(std::shared_ptr<ChannelQueue> queue) :
+            gr::sync_block("dvmbb_rx_iq_queue_sink",
+                           gr::io_signature::make(1, 1, sizeof(gr_complex)),
                            gr::io_signature::make(0, 0, 0)),
             m_queue(std::move(queue))
         {
@@ -185,6 +250,63 @@ namespace {
 
         std::shared_ptr<ChannelQueue> m_queue;
     };
+
+    /**
+     * @brief GNU Radio sync block to produce complex TX I/Q samples from a modem IQ queue and push to a flowgraph.
+     * Used in IQ_CQPSK modulation mode; outputs gr_complex samples directly to the rotator and SDR sink,
+     * bypassing FM modulation.
+     */
+    class QueueSourceIQ : public gr::sync_block {
+    public:
+        typedef std::shared_ptr<QueueSourceIQ> sptr;
+
+        /**
+         * @brief Factory method to create a new QueueSourceIQ instance.
+         * @param queue Shared pointer to the channel queue to pull TX IQ samples from.
+         * @returns Shared pointer to the created QueueSourceIQ instance.
+         */
+        static sptr make(std::shared_ptr<ChannelQueue> queue)
+        {
+            return gnuradio::get_initial_sptr(new QueueSourceIQ(std::move(queue)));
+        }
+
+        /**
+         * @brief Produces complex samples for the flowgraph by consuming from the channel IQ queue.
+         */
+        int work(int noutput_items, gr_vector_const_void_star& input_items,
+            gr_vector_void_star& output_items) override
+        {
+            (void)input_items;
+
+            auto* out = static_cast<gr_complex*>(output_items[0]);
+            std::lock_guard<std::mutex> lock(m_queue->mtx);
+
+            for (int i = 0; i < noutput_items; ++i) {
+                if (!m_queue->txIQ.empty()) {
+                    out[i] = m_queue->txIQ.front();
+                    m_queue->txIQ.pop_front();
+                } else {
+                    out[i] = gr_complex(0.0f, 0.0f);
+                }
+            }
+
+            return noutput_items;
+        }
+
+    private:
+        /**
+         * @brief Initializes a new instance of the QueueSourceIQ class.
+         */
+        explicit QueueSourceIQ(std::shared_ptr<ChannelQueue> queue) :
+            gr::sync_block("dvmbb_tx_iq_queue_source",
+                           gr::io_signature::make(0, 0, 0),
+                           gr::io_signature::make(1, 1, sizeof(gr_complex))),
+            m_queue(std::move(queue))
+        {
+        }
+
+        std::shared_ptr<ChannelQueue> m_queue;
+    };
 }
 
 /**
@@ -197,15 +319,27 @@ struct RadioManager::Impl {
     struct ChannelGraph {
         std::shared_ptr<ChannelQueue> queue;
 
+        // RX channelizer (shared by both FM and IQ paths)
         gr::filter::freq_xlating_fir_filter_ccf::sptr rxXlate;
+
+        // FM RX path: quadrature demod → gain → real queue sink
         gr::analog::quadrature_demod_cf::sptr rxDemod;
         gr::blocks::multiply_const_ff::sptr rxGain;
         QueueSink::sptr rxOut;
 
+        // IQ RX path: complex samples from channelizer directly to IQ queue sink
+        QueueSinkIQ::sptr rxOutIQ;
+
+        // FM TX path: real queue source → resampler → FM modulator → rotator
         QueueSource::sptr txIn;
         gr::filter::rational_resampler_fff::sptr txResamp;
         gr::analog::frequency_modulator_fc::sptr txFm;
+
+        // TX rotator (shared by both FM and IQ paths)
         gr::blocks::rotator_cc::sptr txShift;
+
+        // IQ TX path: complex queue source → rotator (skips resampler and FM modulator)
+        QueueSourceIQ::sptr txInIQ;
     };
 
     /**
@@ -252,7 +386,10 @@ struct RadioManager::Impl {
     std::vector<DeviceRuntime> devices;
     std::unordered_map<uint8_t, std::shared_ptr<ChannelQueue>> channels;
 
+    // Scratch buffer for FM RX dequeue (real int16_t samples)
     std::vector<int16_t> scratch;
+    // Scratch buffer for IQ RX dequeue (interleaved int16_t I,Q pairs)
+    std::vector<int16_t> scratchIQ;
 
     /**
      * @brief Helper to check if the SDR driver string contains a specific driver name.
@@ -565,6 +702,13 @@ struct RadioManager::Impl {
                 return false;
             }
 
+            // parse modulation mode for this modem channel
+            std::string modeStr = modemList[i]["rf"]["modulationMode"].as<std::string>("FM_C4FM");
+            if (modeStr == "IQ_CQPSK")
+                channel->mode = radio::ModulationMode::IQ_CQPSK;
+            else
+                channel->mode = radio::ModulationMode::FM_C4FM;
+
             channels[static_cast<uint8_t>(i + 1U)] = channel;
         }
 
@@ -712,15 +856,23 @@ struct RadioManager::Impl {
                 double rxOffset = static_cast<double>(ch->rxFreq) - rxCenter;
                 graph.rxXlate = gr::filter::freq_xlating_fir_filter_ccf::make(
                     static_cast<int>(ratio), dev.channelTaps, rxOffset, dev.sampleRate);
-                graph.rxDemod = gr::analog::quadrature_demod_cf::make(1.0f);
-                graph.rxGain = gr::blocks::multiply_const_ff::make(2.0f);
-                graph.rxOut = QueueSink::make(ch);
 
                 dev.tb->connect(dev.src, 0, graph.rxXlate, 0);
-                dev.tb->connect(graph.rxXlate, 0, graph.rxDemod, 0);
-                dev.tb->connect(graph.rxDemod, 0, graph.rxGain, 0);
-                dev.tb->connect(graph.rxGain, 0, graph.rxOut, 0);
 
+                if (ch->mode == radio::ModulationMode::IQ_CQPSK) {
+                    // IQ mode: pass complex samples from channelizer directly to IQ sink.
+                    // FM demodulation is skipped; the protocol engine handles all baseband DSP.
+                    graph.rxOutIQ = QueueSinkIQ::make(ch);
+                    dev.tb->connect(graph.rxXlate, 0, graph.rxOutIQ, 0);
+                } else {
+                    // FM mode: demodulate quadrature FM and pass real audio samples to sink.
+                    graph.rxDemod = gr::analog::quadrature_demod_cf::make(1.0f);
+                    graph.rxGain = gr::blocks::multiply_const_ff::make(2.0f);
+                    graph.rxOut = QueueSink::make(ch);
+                    dev.tb->connect(graph.rxXlate, 0, graph.rxDemod, 0);
+                    dev.tb->connect(graph.rxDemod, 0, graph.rxGain, 0);
+                    dev.tb->connect(graph.rxGain, 0, graph.rxOut, 0);
+                }
             }
 
             // for TX, we connect all channels to a common sum block that feeds the sink, so we need to build the 
@@ -737,16 +889,24 @@ struct RadioManager::Impl {
                 auto& graph = it->second;
                 graph.queue = ch;
 
-                graph.txIn = QueueSource::make(ch);
-                graph.txResamp = gr::filter::rational_resampler_fff::make(ratio, 1U);
-                graph.txFm = gr::analog::frequency_modulator_fc::make(static_cast<float>((2.0 * kPi * 2500.0) / dev.sampleRate));
-
                 double txOffset = static_cast<double>(ch->txFreq) - txCenter;
                 graph.txShift = gr::blocks::rotator_cc::make((2.0 * kPi * txOffset) / dev.sampleRate);
 
-                dev.tb->connect(graph.txIn, 0, graph.txResamp, 0);
-                dev.tb->connect(graph.txResamp, 0, graph.txFm, 0);
-                dev.tb->connect(graph.txFm, 0, graph.txShift, 0);
+                if (ch->mode == radio::ModulationMode::IQ_CQPSK) {
+                    // IQ mode: accept complex samples from modem IQ queue, route through rotator to sink.
+                    // FM resampling and modulation are skipped.
+                    graph.txInIQ = QueueSourceIQ::make(ch);
+                    dev.tb->connect(graph.txInIQ, 0, graph.txShift, 0);
+                } else {
+                    // FM mode: accept real audio from modem, resample, FM modulate, then shift.
+                    graph.txIn = QueueSource::make(ch);
+                    graph.txResamp = gr::filter::rational_resampler_fff::make(ratio, 1U);
+                    graph.txFm = gr::analog::frequency_modulator_fc::make(static_cast<float>((2.0 * kPi * 2500.0) / dev.sampleRate));
+                    dev.tb->connect(graph.txIn, 0, graph.txResamp, 0);
+                    dev.tb->connect(graph.txResamp, 0, graph.txFm, 0);
+                    dev.tb->connect(graph.txFm, 0, graph.txShift, 0);
+                }
+
                 dev.tb->connect(graph.txShift, 0, dev.txSum, inputIdx++);
             }
 
@@ -882,6 +1042,79 @@ int RadioManager::dequeueRx(uint8_t modemId, uint8_t*& samples)
 
     samples = reinterpret_cast<uint8_t*>(m_impl->scratch.data());
     return static_cast<int>(n * sizeof(int16_t));
+}
+
+/* Queues modem-domain I/Q TX samples for SDR transmission. */
+
+void RadioManager::enqueueIQTx(uint8_t modemId, const uint8_t* samples, size_t length)
+{
+    if (samples == nullptr || length < (2 * sizeof(int16_t)))
+        return;
+
+    std::lock_guard<std::mutex> guard(m_impl->lock);
+
+    auto it = m_impl->channels.find(modemId);
+    if (it == m_impl->channels.end())
+        return;
+
+    auto& ch = it->second;
+    std::lock_guard<std::mutex> qlock(ch->mtx);
+
+    // input format: interleaved int16_t I,Q pairs; normalize to gr_complex [-1.0, 1.0]
+    const size_t count = length / (2 * sizeof(int16_t));
+    const auto* in = reinterpret_cast<const int16_t*>(samples);
+    for (size_t i = 0; i < count; ++i) {
+        if (ch->txIQ.size() >= kQueueCapSamples)
+            ch->txIQ.pop_front();
+        const float iVal = static_cast<float>(in[2 * i])     / 32767.0f;
+        const float qVal = static_cast<float>(in[2 * i + 1]) / 32767.0f;
+        ch->txIQ.push_back(gr_complex(iVal, qVal));
+    }
+}
+
+/* Dequeues modem-domain I/Q RX samples from SDR path. */
+
+int RadioManager::dequeueIQRx(uint8_t modemId, uint8_t*& samples)
+{
+    samples = nullptr;
+
+    std::lock_guard<std::mutex> guard(m_impl->lock);
+
+    auto it = m_impl->channels.find(modemId);
+    if (it == m_impl->channels.end())
+        return 0;
+
+    auto& ch = it->second;
+    std::lock_guard<std::mutex> qlock(ch->mtx);
+
+    if (ch->rxIQ.empty())
+        return 0;
+
+    // convert gr_complex back to interleaved int16_t I,Q pairs
+    const size_t n = std::min(ch->rxIQ.size(), kRxBurstSamples);
+    m_impl->scratchIQ.resize(n * 2);
+    for (size_t i = 0; i < n; ++i) {
+        const gr_complex s = ch->rxIQ.front();
+        ch->rxIQ.pop_front();
+        m_impl->scratchIQ[2 * i]     = static_cast<int16_t>(std::max(-32767.0f, std::min(32767.0f, s.real() * 32767.0f)));
+        m_impl->scratchIQ[2 * i + 1] = static_cast<int16_t>(std::max(-32767.0f, std::min(32767.0f, s.imag() * 32767.0f)));
+    }
+
+    samples = reinterpret_cast<uint8_t*>(m_impl->scratchIQ.data());
+    return static_cast<int>(n * 2 * sizeof(int16_t));
+}
+
+/* Returns the configured modulation mode for a modem channel. */
+
+radio::ModulationMode RadioManager::getChannelMode(uint8_t modemId)
+{
+    std::lock_guard<std::mutex> guard(m_impl->lock);
+
+    auto it = m_impl->channels.find(modemId);
+    if (it == m_impl->channels.end())
+        return radio::ModulationMode::FM_C4FM;
+
+    return it->second->mode;
 }
 
 // ---------------------------------------------------------------------------
