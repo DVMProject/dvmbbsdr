@@ -1,5 +1,7 @@
 # Digital Voice Modem SDR
 
+## NOTE: THIS PROJECT IS IN ITS INFANCY, AND WILL LIKELY HAVE PROBLEMS OR MAY STRAIGHT NOT FUNCTION, IF YOU CONTINUE, HEED THESE WORDS: THERE BE DRAGONS.
+
 The DVM SDR provides the SDR implementation of a mixed-mode DMR, P25 and/or NXDN or dedicated-mode DMR, P25 or NXDN repeater system. The SDR; is the portion of a complete Over-The-Air modem implementation that connects directly to an appropriate SDR and performs the actual reception and creation of the digitial waveforms.
 
 Please feel free to reach out to us for help, comments or otherwise, on our Discord: https://discord.gg/3pBe8xgrEz
