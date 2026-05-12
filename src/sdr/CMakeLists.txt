@@ -25,6 +25,8 @@ file(GLOB dvmsdr_SRC
     "src/sdr/modem/*.cpp"
     "src/sdr/modem/port/*.h"
     "src/sdr/modem/port/*.cpp"
+    "src/sdr/radio/*.h"
+    "src/sdr/radio/*.cpp"
     "src/sdr/*.h"
     "src/sdr/*.cpp"
 )

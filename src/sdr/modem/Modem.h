@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Digital Voice Modem - Modem Firmware
+ * Digital Voice Modem - Baseband SDR RF Runtime
  * GPLv2 Open Source. Use is subject to license terms.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
@@ -140,6 +140,14 @@ namespace modem
          */
         void writeDump(const uint8_t* data, uint16_t length);
 
+        /**
+         * @brief Updates RF channel parameters for this modem instance.
+         * @param rxFreq Receive frequency in Hz.
+         * @param txFreq Transmit frequency in Hz.
+         * @param rfPower RF power level hint.
+         */
+        void setRFChannel(uint32_t rxFreq, uint32_t txFreq, uint8_t rfPower);
+
     private:
         friend class modem::SerialPort;
         friend class modem::IO;
@@ -222,7 +230,7 @@ namespace modem
          * @param samples Buffer to store the received samples.
          * @return int Number of samples read.
          */
-        int readFMSamples(uint8_t* samples);
+        int readFMSamples(uint8_t*& samples);
         /**
          * @brief Helper to handle transmitting FM modulated samples.
          * @param samples Buffer containing samples.

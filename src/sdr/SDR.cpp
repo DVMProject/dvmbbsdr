@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Digital Voice Modem - Modem Firmware
+ * Digital Voice Modem - Baseband SDR RF Runtime
  * GPLv2 Open Source. Use is subject to license terms.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
@@ -15,6 +15,7 @@
 #include "common/Thread.h"
 #include "common/Log.h"
 #include "common/Utils.h"
+#include "radio/RadioManager.h"
 #include "SDR.h"
 #include "SDRMain.h"
 
@@ -128,12 +129,11 @@ int SDR::run()
     if (!ret)
         return EXIT_FAILURE;
 
-    /*
-    ** bryanb: we probably need to perform GNU Radio setup here -- we definitely should do this before
-    **  any virtual modem init, because those will need to setup whatever blocks for the frequencies and such
-    **  they'll be on inside the Modem class
-    ** TODO TODO TODO
-    */
+    ret = radio::RadioManager::instance().initialize(m_conf);
+    if (!ret) {
+        ::LogError(LOG_HOST, "Failed to initialize SDR RF runtime");
+        return EXIT_FAILURE;
+    }
 
     // initialize modems
     ret = createModems();
@@ -174,11 +174,7 @@ int SDR::run()
         }
     }
 
-    /*
-    ** bryanb: we probably need to perform GNU Radio shutdown here -- we definitely should do this after
-    **  any virtual modem shutdown
-    ** TODO TODO TODO
-    */
+    radio::RadioManager::instance().shutdown();
 
     return EXIT_SUCCESS;
 }

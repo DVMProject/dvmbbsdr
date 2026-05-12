@@ -28,6 +28,81 @@ log:
     fileRoot: DVMSDR
 
 #
+# SDR RF Runtime Configuration
+#
+sdr:
+    # osmosdr device selection string.
+    # Format: "driver=<backend>[,key=value,...]"
+    # Common backends include:
+    #   - rtl            (RTL-SDR)
+    #   - hackrf         (HackRF)
+    #   - bladerf        (bladeRF)
+    #   - airspy         (Airspy)
+    #   - soapy          (SoapySDR bridge)
+    #   - uhd            (USRP via UHD)
+    #
+    # Common selectors/keys (driver dependent):
+    #   serial=..., index=..., device=..., type=..., addr=..., antenna=...
+    #
+    # Examples:
+    #   RTL-SDR (first dongle):
+    #     args: "driver=rtl,index=0"
+    #   RTL-SDR (specific serial):
+    #     args: "driver=rtl,serial=00000001"
+    #   HackRF:
+    #     args: "driver=hackrf"
+    #   bladeRF by serial:
+    #     args: "driver=bladerf,serial=5519595f67984f95"
+    #   USRP over network:
+    #     args: "driver=uhd,addr=192.168.10.2"
+    #   Soapy LimeSDR:
+    #     args: "driver=soapy,device=lime"
+
+    # Optional fallback values used when fields are omitted in individual devices.
+    defaults:
+        sampleRate: 960000
+        rxGain: 30
+        txGain: 30
+        freqCorrPpm: 0
+        rxAntenna: ""
+        txAntenna: ""
+
+    # Wideband channelization and transmission settings.
+    # Rebuild-free hot retune is used when only channel frequencies change.
+    devices:
+        # Device 0: RTL-SDR (RX-only)
+        - args: "driver=rtl,index=0"
+
+          # Wideband sample rate used for channelization and multi-carrier operation.
+          sampleRate: 960000
+
+          # Center-frequency correction in PPM.
+          freqCorrPpm: 0
+
+          # Gain controls (dB).
+          rxGain: 30
+          txGain: 30
+
+          # Optional antenna names (driver dependent; blank = default).
+          rxAntenna: ""
+          txAntenna: ""
+
+          # Optional frontend bandwidth hints (Hz); 0 = automatic.
+          rxBandwidth: 0
+          txBandwidth: 0
+
+        # Device 1: USRP (TX+RX capable)
+        - args: "driver=uhd,addr=192.168.10.2"
+          sampleRate: 960000
+          freqCorrPpm: 0
+          rxGain: 30
+          txGain: 30
+          rxAntenna: ""
+          txAntenna: ""
+          rxBandwidth: 0
+          txBandwidth: 0
+
+#
 # Virtual Modem Configuration
 #
 modems:
@@ -41,6 +116,14 @@ modems:
       verbose: true
       # Flag indicating whether or not debug logging is enabled.
       debug: false
+      rf:
+        # Single-device assignment (applies to both RX and TX if rxDevice/txDevice are not set).
+        device: 0
+        # Optional explicit split assignment. Useful when RX SDR is receive-only (for example RTL-SDR).
+        #rxDevice: 0
+        #txDevice: 1
+        # Optional static channel metadata (for planning/observability).
+        name: "channel-a"
     - protocol:
         # UART/RS232 serial port device.
         port: /tmp/dvm1
@@ -51,6 +134,14 @@ modems:
       verbose: true
       # Flag indicating whether or not debug logging is enabled.
       debug: false
+      rf:
+        # Single-device assignment (applies to both RX and TX if rxDevice/txDevice are not set).
+        device: 0
+        # Optional explicit split assignment. Useful when RX SDR is receive-only (for example RTL-SDR).
+        #rxDevice: 0
+        #txDevice: 1
+        # Optional static channel metadata (for planning/observability).
+        name: "channel-b"
 
 #
 # System Configuration

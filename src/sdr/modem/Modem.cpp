@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Digital Voice Modem - Modem Firmware
+ * Digital Voice Modem - Baseband SDR RF Runtime
  * GPLv2 Open Source. Use is subject to license terms.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
@@ -11,6 +11,7 @@
 #include "common/Thread.h"
 #include "common/StopWatch.h"
 #include "common/Log.h"
+#include "radio/RadioManager.h"
 #include "SDRMain.h"
 
 using namespace modem;
@@ -177,6 +178,13 @@ void Modem::writeDump(const uint8_t* data, uint16_t length)
     m_serial.writeDump(data, length);
 }
 
+/* */
+
+void Modem::setRFChannel(uint32_t rxFreq, uint32_t txFreq, uint8_t rfPower)
+{
+    radio::RadioManager::instance().setChannelRF(m_modemId, rxFreq, txFreq, rfPower);
+}
+
 // ---------------------------------------------------------------------------
 //  Private Class Members
 // ---------------------------------------------------------------------------
@@ -240,22 +248,14 @@ void* Modem::threadClock(void* arg)
 
 /* Read samples queued for reception. */
 
-int Modem::readFMSamples(uint8_t* samples)
+int Modem::readFMSamples(uint8_t*& samples)
 {
-    /*
-    ** TODO TODO TODO -- this should pull demodulated FM samples from some queue for passing to 
-    **  the higher level Rx functions
-    */
-
-    return 0;
+    return radio::RadioManager::instance().dequeueRx(m_modemId, samples);
 }
 
 /* Helper to handle FM modulated samples. */
 
 void Modem::transmitFMSamples(const uint8_t* samples, size_t length)
 {
-    /*
-    ** TODO TODO TODO -- this is fed samples from the higher level Tx functions
-    **  to be transmitted as modulated FM
-    */
+    radio::RadioManager::instance().enqueueTx(m_modemId, samples, length);
 }

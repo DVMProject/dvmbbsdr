@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Digital Voice Modem - Modem Firmware
+ * Digital Voice Modem - Baseband SDR RF Runtime
  * GPLv2 Open Source. Use is subject to license terms.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
@@ -70,35 +70,6 @@ const uint32_t DC_FILTER_STAGES = 1U; // One Biquad stage
 const uint16_t DC_OFFSET = 2048U;
 
 // ---------------------------------------------------------------------------
-//  Globals Variables
-// ---------------------------------------------------------------------------
-
-static pthread_t m_threadTx;
-static pthread_mutex_t m_txLock;
-static pthread_t m_threadRx;
-static pthread_mutex_t m_rxLock;
-static pthread_t m_threadStatus;
-
-static std::vector<short> m_audioBufTx = std::vector<short>();
-
-static std::vector<short> m_audioBufRx = std::vector<short>();
-
-static bool m_abort = false;
-
-static bool m_cosPrev = false;
-static bool m_cosInt = false;
-
-static bool m_pttPrev = false;
-static bool m_ptt = false;
-
-static bool m_dmrModeToggle = false;
-static bool m_dmrMode = false;
-static bool m_p25ModeToggle = false;
-static bool m_p25Mode = false;
-static bool m_nxdnModeToggle = false;
-static bool m_nxdnMode = false;
-
-// ---------------------------------------------------------------------------
 //  Public Class Members
 // ---------------------------------------------------------------------------
 
@@ -133,7 +104,25 @@ IO::IO(modem::Modem* modem) :
     m_lockout(false),
     m_rxFrequency(DEFAULT_FREQUENCY),
     m_txFrequency(DEFAULT_FREQUENCY),
-    m_rfPower(0U)
+    m_rfPower(0U),
+    m_threadTx(),
+    m_txLock(),
+    m_threadRx(),
+    m_rxLock(),
+    m_threadStatus(),
+    m_audioBufTx(),
+    m_audioBufRx(),
+    m_abort(false),
+    m_cosPrev(false),
+    m_cosInt(false),
+    m_pttPrev(false),
+    m_ptt(false),
+    m_dmrModeToggle(false),
+    m_dmrMode(false),
+    m_p25ModeToggle(false),
+    m_p25Mode(false),
+    m_nxdnModeToggle(false),
+    m_nxdnMode(false)
 {
     ::memset(m_rrc_0_2_State, 0x00U, 70U * sizeof(q15_t));
     ::memset(m_boxcar_5_State, 0x00U, 30U * sizeof(q15_t));
@@ -624,6 +613,8 @@ uint8_t IO::setRFParams(uint32_t rxFreq, uint32_t txFreq, uint8_t rfPower)
     m_rxFrequency = rxFreq;
     m_txFrequency = txFreq;
 
+    m_modem->setRFChannel(rxFreq, txFreq, rfPower);
+
     ::LogInfoEx(LOG_SDR, "Modem %u (%s) RX FREQ: %u TX FREQ: %u PWR: %u", m_modem->m_modemId, m_modem->m_modemPty.c_str(), m_rxFrequency, m_txFrequency, m_rfPower);
 
     return RSN_OK;
@@ -832,31 +823,31 @@ void* IO::modemStatusHelper(void* arg)
 {
     IO* io = (IO*)arg;
     if (io != nullptr) {
-        while (!m_abort) {
+        while (!io->m_abort) {
             // log flag statuses
-            if (m_cosPrev != m_cosInt) {
-                ::LogInfoEx(LOG_SDR, "Modem %u (%s) COS %s", io->m_modem->m_modemId, io->m_modem->m_modemPty.c_str(), m_cosInt ? "DETECT" : "NO CARRIER");
-                m_cosPrev = m_cosInt;
+            if (io->m_cosPrev != io->m_cosInt) {
+                ::LogInfoEx(LOG_SDR, "Modem %u (%s) COS %s", io->m_modem->m_modemId, io->m_modem->m_modemPty.c_str(), io->m_cosInt ? "DETECT" : "NO CARRIER");
+                io->m_cosPrev = io->m_cosInt;
             }
 
-            if (m_pttPrev != m_ptt) {
-                ::LogInfoEx(LOG_SDR, "Modem %u (%s) PTT %s", io->m_modem->m_modemId, io->m_modem->m_modemPty.c_str(), m_ptt ? "TRANSMIT" : "IDLE");
-                m_pttPrev = m_ptt;
+            if (io->m_pttPrev != io->m_ptt) {
+                ::LogInfoEx(LOG_SDR, "Modem %u (%s) PTT %s", io->m_modem->m_modemId, io->m_modem->m_modemPty.c_str(), io->m_ptt ? "TRANSMIT" : "IDLE");
+                io->m_pttPrev = io->m_ptt;
             }
 
-            if (m_dmrModeToggle) {
-                ::LogInfoEx(LOG_SDR, "Modem %u (%s) DMR Mode %s", io->m_modem->m_modemId, io->m_modem->m_modemPty.c_str(), m_dmrMode ? "ENABLED" : "DISABLED");
-                m_dmrModeToggle = false;
+            if (io->m_dmrModeToggle) {
+                ::LogInfoEx(LOG_SDR, "Modem %u (%s) DMR Mode %s", io->m_modem->m_modemId, io->m_modem->m_modemPty.c_str(), io->m_dmrMode ? "ENABLED" : "DISABLED");
+                io->m_dmrModeToggle = false;
             }
 
-            if (m_p25ModeToggle) {
-                ::LogInfoEx(LOG_SDR, "Modem %u (%s) P25 Mode %s", io->m_modem->m_modemId, io->m_modem->m_modemPty.c_str(), m_p25Mode ? "ENABLED" : "DISABLED");
-                m_p25ModeToggle = false;
+            if (io->m_p25ModeToggle) {
+                ::LogInfoEx(LOG_SDR, "Modem %u (%s) P25 Mode %s", io->m_modem->m_modemId, io->m_modem->m_modemPty.c_str(), io->m_p25Mode ? "ENABLED" : "DISABLED");
+                io->m_p25ModeToggle = false;
             }
 
-            if (m_nxdnModeToggle) {
-                ::LogInfoEx(LOG_SDR, "Modem %u (%s) NXDN Mode %s", io->m_modem->m_modemId, io->m_modem->m_modemPty.c_str(), m_nxdnMode ? "ENABLED" : "DISABLED");
-                m_nxdnModeToggle = false;
+            if (io->m_nxdnModeToggle) {
+                ::LogInfoEx(LOG_SDR, "Modem %u (%s) NXDN Mode %s", io->m_modem->m_modemId, io->m_modem->m_modemPty.c_str(), io->m_nxdnMode ? "ENABLED" : "DISABLED");
+                io->m_nxdnModeToggle = false;
             }
 
             ::usleep(1000U);
@@ -872,7 +863,7 @@ void* IO::txThreadHelper(void* arg)
 {
     IO* p = (IO*)arg;
 
-    while (!m_abort)
+    while (!p->m_abort)
     {
         if (p->m_txBuffer.getData() < 1)
             usleep(20);
@@ -919,7 +910,7 @@ void* IO::rxThreadHelper(void* arg)
 {
     IO* p = (IO*)arg;
 
-    while (!m_abort)
+    while (!p->m_abort)
         p->interruptRx();
 
     return NULL;

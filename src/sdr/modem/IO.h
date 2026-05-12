@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Digital Voice Modem - Modem Firmware
+ * Digital Voice Modem - Baseband SDR RF Runtime
  * GPLv2 Open Source. Use is subject to license terms.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
@@ -25,6 +25,9 @@
 #include "modem/SerialPort.h"
 #include "SampleBuffer.h"
 #include "RSSIBuffer.h"
+
+#include <pthread.h>
+#include <vector>
 
 // ---------------------------------------------------------------------------
 //  Constants
@@ -310,6 +313,30 @@ namespace modem
         uint8_t m_afcKI;
         uint8_t m_afcKP;
         uint8_t m_afcRange;
+
+        pthread_t m_threadTx;
+        pthread_mutex_t m_txLock;
+        pthread_t m_threadRx;
+        pthread_mutex_t m_rxLock;
+        pthread_t m_threadStatus;
+
+        std::vector<short> m_audioBufTx;
+        std::vector<short> m_audioBufRx;
+
+        bool m_abort;
+
+        bool m_cosPrev;
+        bool m_cosInt;
+
+        bool m_pttPrev;
+        bool m_ptt;
+
+        bool m_dmrModeToggle;
+        bool m_dmrMode;
+        bool m_p25ModeToggle;
+        bool m_p25Mode;
+        bool m_nxdnModeToggle;
+        bool m_nxdnMode;
 
         // Hardware specific routines
         /**
