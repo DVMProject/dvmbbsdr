@@ -140,14 +140,6 @@ namespace modem
          */
         void writeDump(const uint8_t* data, uint16_t length);
 
-        /**
-         * @brief Updates RF channel parameters for this modem instance.
-         * @param rxFreq Receive frequency in Hz.
-         * @param txFreq Transmit frequency in Hz.
-         * @param rfPower RF power level hint.
-         */
-        void setRFChannel(uint32_t rxFreq, uint32_t txFreq, uint8_t rfPower);
-
     private:
         friend class modem::SerialPort;
         friend class modem::IO;
@@ -226,42 +218,33 @@ namespace modem
         static void* threadClock(void* arg);
 
         /**
+         * @brief Helper to set RF channel parameters for this modem instance.
+         * @param rxFreq Receive frequency in Hz.
+         * @param txFreq Transmit frequency in Hz.
+         * @param rfPower RF power level hint.
+         * @param rxInvert Flag indicating whether Rx polarity should be inverted.
+         * @param txInvert Flag indicating whether Tx polarity should be inverted.
+         */
+        void setRFChannel(uint32_t rxFreq, uint32_t txFreq, uint8_t rfPower, bool rxInvert, bool txInvert);
+
+        /**
+         * @brief Helper to set the modem TX activity state.
+         * @param active True while modem TX is asserted and modulation should pass to SDR.
+         */
+        void setModemTxActive(bool active);
+
+        /**
          * @brief Read samples queued for reception.
          * @param samples Buffer to store the received samples.
          * @return int Number of samples read.
          */
-        int readFMSamples(uint8_t*& samples);
+        int readFMSamples(uint8_t* samples);
         /**
          * @brief Helper to handle transmitting FM modulated samples.
          * @param samples Buffer containing samples.
          * @param length Length of buffer.
          */
         void transmitFMSamples(const uint8_t* samples, size_t length);
-
-        /**
-         * @brief Read I/Q samples queued for reception (IQ_CQPSK mode).
-         *
-         * The returned buffer contains interleaved int16_t I,Q pairs (4 bytes per sample).
-         *
-         * @param[out] samples Buffer to store the received I/Q samples.
-         * @return int Number of bytes read.
-         */
-        int readIQSamples(uint8_t*& samples);
-        /**
-         * @brief Helper to handle transmitting I/Q modulated samples (IQ_CQPSK mode).
-         *
-         * The buffer must contain interleaved int16_t I,Q pairs (4 bytes per sample).
-         *
-         * @param samples Buffer containing interleaved I,Q samples.
-         * @param length Length of buffer in bytes.
-         */
-        void transmitIQSamples(const uint8_t* samples, size_t length);
-
-        /**
-         * @brief Returns whether the SDR runtime still has pending TX samples for this modem.
-         * @return true if pending runtime TX data exists; otherwise false.
-         */
-        bool hasPendingRuntimeTx() const;
     };
 } // namespace modem
 

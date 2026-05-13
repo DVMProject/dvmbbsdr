@@ -166,13 +166,6 @@ void Modem::writeDump(const uint8_t* data, uint16_t length)
     m_serial.writeDump(data, length);
 }
 
-/* */
-
-void Modem::setRFChannel(uint32_t rxFreq, uint32_t txFreq, uint8_t rfPower)
-{
-    radio::RadioManager::instance().setChannelRF(m_modemId, rxFreq, txFreq, rfPower);
-}
-
 // ---------------------------------------------------------------------------
 //  Private Class Members
 // ---------------------------------------------------------------------------
@@ -234,37 +227,44 @@ void* Modem::threadClock(void* arg)
     return nullptr;
 }
 
+/* Helper to set RF channel parameters for this modem instance. */
+
+void Modem::setRFChannel(uint32_t rxFreq, uint32_t txFreq, uint8_t rfPower, bool rxInvert, bool txInvert)
+{
+    /*
+    ** TODO TODO TODO -- this should set the RF channel parameters for the SDR path for this modem, which will be used 
+    ** to configure the modulation and other parameters for the various modulation modes
+    */
+}
+
+/* Helper to set the modem TX activity state. */
+
+void Modem::setModemTxActive(bool active)
+{
+    /*
+    ** TODO TODO TODO -- this should toggle the Tx state for the SDR path for this modem, which will be used to gate 
+    ** modulation when the modem is active vs idle
+    */
+}
+
 /* Read samples queued for reception. */
 
-int Modem::readFMSamples(uint8_t*& samples)
+int Modem::readFMSamples(uint8_t* samples)
 {
-    return radio::RadioManager::instance().dequeueRx(m_modemId, samples);
+    /*
+    ** TODO TODO TODO -- this should pull demodulated FM samples from some queue for passing to 
+    **  the higher level Rx functions
+    */
+
+    return 0;
 }
 
 /* Helper to handle FM modulated samples. */
 
 void Modem::transmitFMSamples(const uint8_t* samples, size_t length)
 {
-    radio::RadioManager::instance().enqueueTx(m_modemId, samples, length);
-}
-
-/* Read IQ samples queued for reception. */
-
-int Modem::readIQSamples(uint8_t*& samples)
-{
-    return radio::RadioManager::instance().dequeueIQRx(m_modemId, samples);
-}
-
-/* Helper to handle transmitting I/Q modulated samples. */
-
-void Modem::transmitIQSamples(const uint8_t* samples, size_t length)
-{
-    radio::RadioManager::instance().enqueueIQTx(m_modemId, samples, length);
-}
-
-/* Returns whether the SDR runtime still has pending TX samples for this modem. */
-
-bool Modem::hasPendingRuntimeTx() const
-{
-    return radio::RadioManager::instance().hasPendingTx(m_modemId);
+    /*
+    ** TODO TODO TODO -- this is fed samples from the higher level Tx functions
+    **  to be transmitted as modulated FM
+    */
 }

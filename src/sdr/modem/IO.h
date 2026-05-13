@@ -143,11 +143,6 @@ namespace modem
         void setTransmit();
 
         /**
-         * @brief Hardware interrupt handler.
-         */
-        void interrupt();
-
-        /**
          * @brief Sets various air interface parameters.
          * @param rxInvert Flag indicating the Rx polarity should be inverted.
          * @param txInvert Flag indicating the Tx polarity should be inverted.
@@ -318,18 +313,6 @@ namespace modem
         std::vector<short> m_audioBufTx;
         std::vector<short> m_audioBufRx;
 
-        // IQ mode audio bridge buffers (IQ_CQPSK modulation mode).
-        // Stores interleaved complex int16_t I,Q sample pairs accumulated before forwarding
-        // to the radio runtime. m_audioBufRxIQ is filled by interruptRx(); the protocol engine
-        // will consume these once CQPSK demodulation support is added (future work).
-        std::vector<std::complex<int16_t>> m_audioBufTxIQ;
-        std::vector<std::complex<int16_t>> m_audioBufRxIQ;
-
-        // Cached modulation mode for this channel (updated by setRFParams).
-        // 0 = FM_C4FM (default), 1 = IQ_CQPSK. Stored as uint8_t to avoid pulling
-        // the radio/RadioManager.h header into IO.h.
-        uint8_t m_modulationMode;
-
         bool m_abort;
 
         // RX activity debug state used to report when SDR RF samples are flowing.
@@ -404,6 +387,11 @@ namespace modem
          * @return void* 
          */
         static void* modemStatusHelper(void* arg);
+
+        /**
+         * @brief Hardware interrupt handler.
+         */
+        void interrupt();
 
         /**
          * @brief 

@@ -24,20 +24,28 @@
 
 using namespace modem;
 
-namespace {
-    constexpr uint64_t kRxRfReportIntervalMs = 1000U;
-    constexpr uint64_t kRxRfIdleIntervalMs = 500U;
+// ---------------------------------------------------------------------------
+//  Global Functions
+// ---------------------------------------------------------------------------
 
-    uint64_t monotonicMs()
-    {
-        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count());
-    }
+/**
+ * @brief Helper to get current monotonic time in milliseconds.
+ * @returns Current monotonic time in milliseconds.
+ */
+uint64_t monotonicMs()
+{
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
 // ---------------------------------------------------------------------------
 //  Constants
 // ---------------------------------------------------------------------------
+
+#define RX_RF_REPORT_INTERVAL_MS 1000U
+#define RX_RF_IDLE_INTERVAL_MS 500U
+#define TX_FRAME_SAMPLES 720U      // 30 ms at 24 kHz modem sample rate
+#define TX_FRAME_SLEEP_US 30000U   // pace one TX frame in real
 
 // Generated using rcosdesign(0.2, 8, 5, 'sqrt') in MATLAB
 static q15_t RRC_0_2_FILTER[] = {
@@ -122,9 +130,6 @@ IO::IO(modem::Modem* modem, bool debug) :
     m_threadStatus(),
     m_audioBufTx(),
     m_audioBufRx(),
-    m_audioBufTxIQ(),
-    m_audioBufRxIQ(),
-    m_modulationMode(0U),
     m_abort(false),
     m_rxRfActive(false),
     m_rxRfLastDataMs(0U),
@@ -249,21 +254,15 @@ void IO::process()
     ::pthread_mutex_lock(&m_txLock);
     if (m_txBuffer.getData() > 0U) {
         hasPendingTx = true;
-    } else if (m_modulationMode == static_cast<uint8_t>(radio::ModulationMode::IQ_CQPSK)) {
-        hasPendingTx = !m_audioBufTxIQ.empty();
     } else {
         hasPendingTx = !m_audioBufTx.empty();
     }
     ::pthread_mutex_unlock(&m_txLock);
 
-    // Also account for samples already handed off to the SDR runtime queue.
-    // Without this check, PTT can be dropped while GNU Radio still has pending carrier samples.
-    if (!hasPendingTx && m_modem->hasPendingRuntimeTx()) {
-        hasPendingTx = true;
-    }
-
     if (!hasPendingTx && m_modem->m_tx) {
         m_modem->m_tx = false;
+        m_modem->setModemTxActive(false);
+
         if (m_debug)
             ::LogDebugEx(LOG_SDR, "IO::process()", "no Tx data, TX OFF");
         setPTTInt(m_pttInvert ? true : false);
@@ -439,6 +438,8 @@ void IO::write(DVM_STATE mode, q15_t* samples, uint16_t length, const uint8_t* c
     // Switch the transmitter on if needed
     if (!m_modem->m_tx) {
         m_modem->m_tx = true;
+        m_modem->setModemTxActive(true);
+
         if (m_debug)
             ::LogDebugEx(LOG_SDR, "IO::write()", "TX ON, first sample written");
         setPTTInt(m_pttInvert ? false : true);
@@ -526,57 +527,17 @@ void IO::setMode()
 
 void IO::setTransmit()
 {
-    // Switch the transmitter on if needed
-    if (!m_modem->m_tx) {
-        m_modem->m_tx = true;
-        if (m_debug)
-            ::LogDebugEx(LOG_SDR, "IO::setTransmit()", "TX ON");
-        setPTTInt(m_pttInvert ? false : true);
-    }
-    else {
-        m_modem->m_tx = false;
-        if (m_debug)
-            ::LogDebugEx(LOG_SDR, "IO::setTransmit()", "TX OFF");
-        setPTTInt(m_pttInvert ? true : false);
-    }
-}
+    // Assert TX when requested by protocol engines. Deassert is handled by process()
+    // once there are no pending TX samples left.
+    if (m_modem->m_tx)
+        return;
 
-/* Hardware interrupt handler. */
+    m_modem->m_tx = true;
+    m_modem->setModemTxActive(true);
 
-void IO::interrupt()
-{
-    int16_t sample = 0;
-    uint8_t control = MARK_NONE;
-
-    std::vector<short> fmBatch;
-    std::vector<std::complex<int16_t>> iqBatch;
-
-    ::pthread_mutex_lock(&m_txLock);
-    while (m_txBuffer.get(sample, control)) {
-        if (m_modulationMode == static_cast<uint8_t>(radio::ModulationMode::IQ_CQPSK)) {
-            // IQ mode: forward complex samples immediately; imag stays zero until
-            // CQPSK protocol engines generate true complex symbols.
-            iqBatch.push_back(std::complex<int16_t>(sample, 0));
-        } else {
-            // FM mode: forward real samples immediately to avoid fixed chunk pacing.
-            fmBatch.push_back(static_cast<short>(sample));
-        }
-    }
-    ::pthread_mutex_unlock(&m_txLock);
-
-    if (m_modulationMode == static_cast<uint8_t>(radio::ModulationMode::IQ_CQPSK)) {
-        if (!iqBatch.empty()) {
-            m_modem->transmitIQSamples(reinterpret_cast<const uint8_t*>(iqBatch.data()),
-                iqBatch.size() * sizeof(std::complex<int16_t>));
-        }
-    } else {
-        if (!fmBatch.empty()) {
-            m_modem->transmitFMSamples(reinterpret_cast<const uint8_t*>(fmBatch.data()),
-                fmBatch.size() * sizeof(short));
-        }
-    }
-    sample = 0;
-    m_watchdog++;
+    if (m_debug)
+        ::LogDebugEx(LOG_SDR, "IO::setTransmit()", "TX ON");
+    setPTTInt(m_pttInvert ? false : true);
 }
 
 /* Sets various air interface parameters. */
@@ -637,11 +598,7 @@ uint8_t IO::setRFParams(uint32_t rxFreq, uint32_t txFreq, uint8_t rfPower)
     m_rxFrequency = rxFreq;
     m_txFrequency = txFreq;
 
-    m_modem->setRFChannel(rxFreq, txFreq, rfPower);
-    radio::RadioManager::instance().setChannelPolarity(m_modem->m_modemId, m_rxInvert, m_txInvert);
-
-    // Cache modulation mode so interrupt()/interruptRx() can branch without locking RadioManager.
-    m_modulationMode = static_cast<uint8_t>(radio::RadioManager::instance().getChannelMode(m_modem->m_modemId));
+    m_modem->setRFChannel(rxFreq, txFreq, rfPower, m_rxInvert, m_txInvert);
 
     ::LogInfoEx(LOG_SDR, "Modem %u (%s) RX FREQ: %u TX FREQ: %u PWR: %u", m_modem->m_modemId, m_modem->m_modemPty.c_str(), m_rxFrequency, m_txFrequency, m_rfPower);
 
@@ -878,6 +835,34 @@ void* IO::modemStatusHelper(void* arg)
     return nullptr;
 }
 
+/* Hardware interrupt handler. */
+
+void IO::interrupt()
+{
+    int16_t sample = 0;
+    uint8_t control = MARK_NONE;
+
+    ::pthread_mutex_lock(&m_txLock);
+    while (m_txBuffer.get(sample, control)) {
+        // FM mode: stage real samples and emit fixed-size frames at modem cadence.
+        m_audioBufTx.push_back(static_cast<short>(sample));
+
+        if (m_audioBufTx.size() >= TX_FRAME_SAMPLES) {
+            m_modem->transmitFMSamples(reinterpret_cast<const uint8_t*>(m_audioBufTx.data()),
+                TX_FRAME_SAMPLES * sizeof(short));
+
+            m_audioBufTx.erase(m_audioBufTx.begin(), m_audioBufTx.begin() + TX_FRAME_SAMPLES);
+            ::pthread_mutex_unlock(&m_txLock);
+            ::usleep(9600 * 3); // 9.6k baud for 30ms of samples to pace the modem correctly; TODO: replace with a more robust scheduler/timer mechanism
+            ::pthread_mutex_lock(&m_txLock);
+        }
+    }
+    ::pthread_mutex_unlock(&m_txLock);
+
+    sample = 0;
+    m_watchdog++;
+}
+
 /*  */
 
 void* IO::txThreadHelper(void* arg)
@@ -890,15 +875,14 @@ void* IO::txThreadHelper(void* arg)
         ::pthread_mutex_lock(&p->m_txLock);
         if (p->m_txBuffer.getData() > 0U) {
             hasPendingTx = true;
-        } else if (p->m_modulationMode == static_cast<uint8_t>(radio::ModulationMode::IQ_CQPSK)) {
-            hasPendingTx = !p->m_audioBufTxIQ.empty();
         } else {
             hasPendingTx = !p->m_audioBufTx.empty();
         }
         ::pthread_mutex_unlock(&p->m_txLock);
 
         if (!hasPendingTx) {
-            ::usleep(1000U);
+            // Keep refill latency below one scheduler millisecond to reduce FM queue starvation.
+            ::usleep(250U);
             continue;
         }
 
@@ -920,14 +904,14 @@ void IO::noteRxRfActivity(uint32_t bytes, bool iqMode)
     if (!m_rxRfActive) {
         m_rxRfActive = true;
         m_rxRfLastReportMs = now;
-        ::LogDebugEx(LOG_SDR, "IO::interruptRx()", "Modem %u (%s) SDR RX ACTIVE (%s)",
+        ::LogDebugEx(LOG_SDR, "IO::interruptRx()", "Modem %u (%s) RX ACTIVE (%s)",
             m_modem->m_modemId, m_modem->m_modemPty.c_str(), iqMode ? "IQ" : "FM");
         return;
     }
 
-    if ((now - m_rxRfLastReportMs) >= kRxRfReportIntervalMs) {
+    if ((now - m_rxRfLastReportMs) >= RX_RF_REPORT_INTERVAL_MS) {
         const unsigned long long elapsedMs = static_cast<unsigned long long>(now - m_rxRfLastReportMs);
-        ::LogDebugEx(LOG_SDR, "IO::interruptRx()", "Modem %u (%s) SDR RX ACTIVE (%s), %u bytes in %u bursts over %llums",
+        ::LogDebugEx(LOG_SDR, "IO::interruptRx()", "Modem %u (%s) RX ACTIVE (%s), %u bytes in %u bursts over %llums",
             m_modem->m_modemId, m_modem->m_modemPty.c_str(), iqMode ? "IQ" : "FM", m_rxRfBytes, m_rxRfBursts, elapsedMs);
 
         m_rxRfBytes = 0U;
@@ -944,10 +928,10 @@ void IO::noteRxRfIdle()
         return;
 
     const uint64_t now = monotonicMs();
-    if ((now - m_rxRfLastDataMs) < kRxRfIdleIntervalMs)
+    if ((now - m_rxRfLastDataMs) < RX_RF_IDLE_INTERVAL_MS)
         return;
 
-    ::LogDebugEx(LOG_SDR, "IO::interruptRx()", "Modem %u (%s) SDR RX IDLE", m_modem->m_modemId, m_modem->m_modemPty.c_str());
+    ::LogDebugEx(LOG_SDR, "IO::interruptRx()", "Modem %u (%s) RX IDLE", m_modem->m_modemId, m_modem->m_modemPty.c_str());
     m_rxRfActive = false;
     m_rxRfBytes = 0U;
     m_rxRfBursts = 0U;
@@ -959,63 +943,28 @@ void IO::interruptRx()
 {
     uint8_t control = MARK_NONE;
 
-    if (m_modulationMode == static_cast<uint8_t>(radio::ModulationMode::IQ_CQPSK)) {
-        /*
-        ** IQ mode: receive complex I/Q samples from the SDR path.
-        ** Samples are stored in m_audioBufRxIQ as complex<int16_t> pairs.
-        ** Note: m_rxBuffer is NOT populated in IQ mode. Protocol engine processing of
-        ** IQ samples requires CQPSK demodulation support (future work).
-        */
-        uint8_t* samples = nullptr;
-        int size = m_modem->readIQSamples(samples);
-        if (size < 1) {
-            if (m_debug)
-                noteRxRfIdle();
-            return;
-        }
-
+    // FM mode: receive FM-demodulated real audio samples from the SDR path.
+    uint8_t* samples = nullptr;
+    int size = m_modem->readFMSamples(samples);
+    if (size < 1) {
         if (m_debug)
-            noteRxRfActivity(static_cast<uint32_t>(size), true);
-
-        ::pthread_mutex_lock(&m_rxLock);
-        const int stride = static_cast<int>(sizeof(std::complex<int16_t>));
-        for (int i = 0; i + stride <= size; i += stride) {
-            std::complex<int16_t> iqSample;
-            ::memcpy(&iqSample, samples + i, static_cast<size_t>(stride));
-            if (m_audioBufRxIQ.size() >= 4096U)
-                m_audioBufRxIQ.erase(m_audioBufRxIQ.begin());
-            m_audioBufRxIQ.push_back(iqSample);
-        }
-        ::pthread_mutex_unlock(&m_rxLock);
-    } else {
-        /*
-        ** FM mode: receive FM-demodulated real audio samples from the SDR path.
-        ** bryanb: because dvmbbsdr currently handles a FM modulated stream for now --
-        **  this function is where we would receive the demodulated carrier for a specific modem
-        ** TODO TODO TODO
-        */
-        uint8_t* samples = nullptr;
-        int size = m_modem->readFMSamples(samples);
-        if (size < 1) {
-            if (m_debug)
-                noteRxRfIdle();
-            return;
-        }
-
-        if (m_debug)
-            noteRxRfActivity(static_cast<uint32_t>(size), false);
-
-        ::pthread_mutex_lock(&m_rxLock);
-
-        for (int i = 0; i < size; i += 2) {
-            int16_t sample = 0;
-            ::memcpy(&sample, (uint8_t*)samples + i, sizeof(short));
-
-            m_rxBuffer.put(sample, control);
-            m_rssiBuffer.put(3U);
-        }
-        ::pthread_mutex_unlock(&m_rxLock);
+            noteRxRfIdle();
+        return;
     }
+
+    if (m_debug)
+        noteRxRfActivity(static_cast<uint32_t>(size), false);
+
+    ::pthread_mutex_lock(&m_rxLock);
+
+    for (int i = 0; i < size; i += 2) {
+        int16_t sample = 0;
+        ::memcpy(&sample, (uint8_t*)samples + i, sizeof(short));
+
+        m_rxBuffer.put(sample, control);
+        m_rssiBuffer.put(3U);
+    }
+    ::pthread_mutex_unlock(&m_rxLock);
 }
 
 /*  */
