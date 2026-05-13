@@ -25,7 +25,7 @@ SampleBuffer::SampleBuffer(uint16_t length) :
     m_full(false),
     m_overflow(false)
 {
-    m_samples = new uint16_t[length];
+    m_samples = new int16_t[length];
     m_control = new uint8_t[length];
 }
 
@@ -62,7 +62,7 @@ uint16_t SampleBuffer::getData() const
 
 /* */
 
-bool SampleBuffer::put(uint16_t sample, uint8_t control)
+    bool SampleBuffer::put(int16_t sample, uint8_t control)
 {
     if (m_full) {
         m_overflow = true;
@@ -84,7 +84,7 @@ bool SampleBuffer::put(uint16_t sample, uint8_t control)
 
 /* */
 
-bool SampleBuffer::get(uint16_t& sample, uint8_t& control)
+    bool SampleBuffer::get(int16_t& sample, uint8_t& control)
 {
     if (m_head == m_tail && !m_full)
         return false;

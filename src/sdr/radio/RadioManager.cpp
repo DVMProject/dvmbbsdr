@@ -82,29 +82,29 @@ namespace {
     }
 
     /**
-     * @brief GNU Radio sync block to consume RX samples from a flowgraph and push to a modem queue.
+     * @brief GNU Radio sync block to consume RX samples from a modem queue and push to a flowgraph.
      */
     struct ChannelQueue {
         std::mutex mtx;
 
-        // FM path: real int16_t samples (12-bit unsigned range, matching IO ADC/DAC convention)
+        // FM queues for samples flowing from the SDR runtime to the modem protocol engines.
         std::deque<int16_t> rx;
         std::deque<int16_t> tx;
 
-        // IQ path: complex float samples (IQ_CQPSK mode)
+        // IQ queues for complex samples flowing from the SDR runtime to the modem protocol engines (IQ_CQPSK mode).
         std::deque<gr_complex> rxIQ;
         std::deque<gr_complex> txIQ;
 
+        // RF parameters for this channel, used to configure the SDR runtime flowgraph.
         uint32_t rxFreq = 0U;
         uint32_t txFreq = 0U;
         uint8_t rfPower = 0U;
         uint32_t rxDeviceIndex = 0U;
         uint32_t txDeviceIndex = 0U;
+        bool rxInvert = false;
+        bool txInvert = false;
 
-        // FM path activity flag: true while QueueSource consumed real TX samples during
-        // the latest scheduler work cycle. Used to gate FM carrier output when idle.
         std::atomic<bool> fmCarrierOn{false};
-
         radio::ModulationMode mode = radio::ModulationMode::FM_C4FM;
     };
 
@@ -116,9 +116,9 @@ namespace {
         typedef std::shared_ptr<QueueSink> sptr;
 
         /**
-         * @brief Factory method to create a new QueueSink instance.
-         * @param queue Shared pointer to the channel queue to push RX samples into.
-         * @returns Shared pointer to the created QueueSink instance.
+         * @brief Factory method to create a QueueSink instance.
+         * @param queue Shared pointer to the ChannelQueue instance for this modem channel.
+         * @returns sptr Shared pointer to the created QueueSink instance.
          */
         static sptr make(std::shared_ptr<ChannelQueue> queue)
         {
@@ -126,13 +126,13 @@ namespace {
         }
 
         /**
-         * @brief Consumes samples from the flowgraph and pushes to the channel queue.
-         * @param noutput_items Number of samples in the input buffer.
-         * @param input_items Vector of input buffers.
+         * @brief GNU Radio work function to process input samples and push to modem queue.
+         * @param noutput_items Number of output items to produce.
+         * @param input_items Vector of input buffers (should contain one buffer of float samples).
          * @param output_items Vector of output buffers (not used).
-         * @returns Number of input samples consumed.
+         * @returns Number of output items produced (should be equal to noutput_items).
          */
-        int work(int noutput_items, gr_vector_const_void_star& input_items, 
+        int work(int noutput_items, gr_vector_const_void_star& input_items,
             gr_vector_void_star& output_items) override
         {
             (void)output_items;
@@ -140,11 +140,14 @@ namespace {
             const auto* in = static_cast<const float*>(input_items[0]);
             std::lock_guard<std::mutex> lock(m_queue->mtx);
 
-            // copy samples from input buffer to channel queue, popping old samples if queue exceeds capacity
+            // for each input sample, push to the RX queue; if the queue is full, pop the oldest sample first
             for (int i = 0; i < noutput_items; ++i) {
                 float v = std::max(-1.0f, std::min(1.0f, in[i] / 2.0f));
-                int32_t sample = static_cast<int32_t>(std::lround((v * 2047.0f) + 2048.0f));
-                sample = std::max(0, std::min(4095, sample));
+                int32_t sample = static_cast<int32_t>(std::lround(v * 32767.0f));
+                sample = std::max(-32768, std::min(32767, sample));
+
+                if (m_queue->rxInvert)
+                    sample = (sample == -32768) ? 32767 : -sample;
 
                 if (m_queue->rx.size() >= kQueueCapSamples)
                     m_queue->rx.pop_front();
@@ -156,7 +159,8 @@ namespace {
 
     private:
         /**
-         * @brief Initializes a new instance of the QueueSink class.
+         * @brief Private constructor for QueueSink. Use the static make() method to create instances.
+         * @param queue Shared pointer to the ChannelQueue instance for this modem channel.
          */
         explicit QueueSink(std::shared_ptr<ChannelQueue> queue) :
             gr::sync_block("dvmbb_rx_queue_sink",
@@ -172,16 +176,15 @@ namespace {
 
     /**
      * @brief GNU Radio sync block to consume complex RX I/Q samples from a flowgraph and push to a modem IQ queue.
-     * Used in IQ_CQPSK modulation mode; receives gr_complex samples directly from the channelizer.
      */
     class QueueSinkIQ : public gr::sync_block {
     public:
         typedef std::shared_ptr<QueueSinkIQ> sptr;
 
         /**
-         * @brief Factory method to create a new QueueSinkIQ instance.
-         * @param queue Shared pointer to the channel queue to push RX IQ samples into.
-         * @returns Shared pointer to the created QueueSinkIQ instance.
+         * @brief Factory method to create a QueueSinkIQ instance.
+         * @param queue Shared pointer to the ChannelQueue instance for this modem channel.
+         * @returns sptr Shared pointer to the created QueueSinkIQ instance.
          */
         static sptr make(std::shared_ptr<ChannelQueue> queue)
         {
@@ -189,7 +192,11 @@ namespace {
         }
 
         /**
-         * @brief Consumes complex samples from the flowgraph and pushes to the channel IQ queue.
+         * @brief GNU Radio work function to process complex input samples and push to modem IQ queue.
+         * @param noutput_items Number of output items to produce.
+         * @param input_items Vector of input buffers (should contain one buffer of gr_complex samples).
+         * @param output_items Vector of output buffers (not used).
+         * @returns Number of output items produced (should be equal to noutput_items).
          */
         int work(int noutput_items, gr_vector_const_void_star& input_items,
             gr_vector_void_star& output_items) override
@@ -199,10 +206,15 @@ namespace {
             const auto* in = static_cast<const gr_complex*>(input_items[0]);
             std::lock_guard<std::mutex> lock(m_queue->mtx);
 
+            // for each input sample, push to the RX IQ queue; if the queue is full, pop the oldest sample first
             for (int i = 0; i < noutput_items; ++i) {
+                gr_complex sample = in[i];
+                if (m_queue->rxInvert)
+                    sample = -sample;
+
                 if (m_queue->rxIQ.size() >= kQueueCapSamples)
                     m_queue->rxIQ.pop_front();
-                m_queue->rxIQ.push_back(in[i]);
+                m_queue->rxIQ.push_back(sample);
             }
 
             return noutput_items;
@@ -210,7 +222,8 @@ namespace {
 
     private:
         /**
-         * @brief Initializes a new instance of the QueueSinkIQ class.
+         * @brief Private constructor for QueueSinkIQ. Use the static make() method to create instances.
+         * @param queue Shared pointer to the ChannelQueue instance for this modem channel.
          */
         explicit QueueSinkIQ(std::shared_ptr<ChannelQueue> queue) :
             gr::sync_block("dvmbb_rx_iq_queue_sink",
@@ -232,9 +245,9 @@ namespace {
         typedef std::shared_ptr<QueueSource> sptr;
 
         /**
-         * @brief Factory method to create a new QueueSource instance.
-         * @param queue Shared pointer to the channel queue to pull TX samples from.
-         * @returns Shared pointer to the created QueueSource instance.
+         * @brief Factory method to create a QueueSource instance.
+         * @param queue Shared pointer to the ChannelQueue instance for this modem channel.
+         * @returns sptr Shared pointer to the created QueueSource instance.
          */
         static sptr make(std::shared_ptr<ChannelQueue> queue)
         {
@@ -242,13 +255,13 @@ namespace {
         }
 
         /**
-         * @brief Produces samples for the flowgraph by consuming from the channel queue.
-         * @param noutput_items Number of samples to produce in the output buffer.
+         * @brief GNU Radio work function to produce output samples from modem queue for transmission.
+         * @param noutput_items Number of output items to produce.
          * @param input_items Vector of input buffers (not used).
-         * @param output_items Vector of output buffers.
-         * @returns Number of output samples produced.
+         * @param output_items Vector of output buffers (should contain one buffer of float samples).
+         * @returns Number of output items produced (should be equal to noutput_items).
          */
-        int work(int noutput_items, gr_vector_const_void_star& input_items, 
+        int work(int noutput_items, gr_vector_const_void_star& input_items,
             gr_vector_void_star& output_items) override
         {
             (void)input_items;
@@ -257,15 +270,17 @@ namespace {
             std::lock_guard<std::mutex> lock(m_queue->mtx);
             bool hadData = false;
 
-            // copy samples from channel queue to output buffer, pushing zeros if queue is empty
+            // for each output sample, pop from the TX queue if available; otherwise output 0.0f (silence)
             for (int i = 0; i < noutput_items; ++i) {
                 if (!m_queue->tx.empty()) {
                     int16_t s = m_queue->tx.front();
                     m_queue->tx.pop_front();
                     hadData = true;
 
-                    float centered = (static_cast<float>(s) - 2048.0f) / 2048.0f;
-                    out[i] = centered;
+                    if (m_queue->txInvert)
+                        s = (s == -32768) ? 32767 : -s;
+
+                    out[i] = static_cast<float>(s) / 32767.0f;
                 } else {
                     out[i] = 0.0f;
                 }
@@ -278,7 +293,8 @@ namespace {
 
     private:
         /**
-         * @brief Initializes a new instance of the QueueSource class.
+         * @brief Private constructor for QueueSource. Use the static make() method to create instances.
+         * @param queue Shared pointer to the ChannelQueue instance for this modem channel.
          */
         explicit QueueSource(std::shared_ptr<ChannelQueue> queue) :
             gr::sync_block("dvmbb_tx_queue_source",
@@ -286,6 +302,7 @@ namespace {
                            gr::io_signature::make(1, 1, sizeof(float))),
             m_queue(std::move(queue))
         {
+            /* stub */
         }
 
         std::shared_ptr<ChannelQueue> m_queue;
@@ -293,17 +310,15 @@ namespace {
 
     /**
      * @brief GNU Radio sync block to produce complex TX I/Q samples from a modem IQ queue and push to a flowgraph.
-     * Used in IQ_CQPSK modulation mode; outputs gr_complex samples directly to the rotator and SDR sink,
-     * bypassing FM modulation.
      */
     class QueueSourceIQ : public gr::sync_block {
     public:
         typedef std::shared_ptr<QueueSourceIQ> sptr;
 
         /**
-         * @brief Factory method to create a new QueueSourceIQ instance.
-         * @param queue Shared pointer to the channel queue to pull TX IQ samples from.
-         * @returns Shared pointer to the created QueueSourceIQ instance.
+         * @brief Factory method to create a QueueSourceIQ instance.
+         * @param queue Shared pointer to the ChannelQueue instance for this modem channel.
+         * @returns sptr Shared pointer to the created QueueSourceIQ instance.
          */
         static sptr make(std::shared_ptr<ChannelQueue> queue)
         {
@@ -311,7 +326,11 @@ namespace {
         }
 
         /**
-         * @brief Produces complex samples for the flowgraph by consuming from the channel IQ queue.
+         * @brief GNU Radio work function to produce complex output samples from modem IQ queue for transmission.
+         * @param noutput_items Number of output items to produce.
+         * @param input_items Vector of input buffers (not used).
+         * @param output_items Vector of output buffers (should contain one buffer of gr_complex samples).
+         * @returns Number of output items produced (should be equal to noutput_items).
          */
         int work(int noutput_items, gr_vector_const_void_star& input_items,
             gr_vector_void_star& output_items) override
@@ -321,10 +340,16 @@ namespace {
             auto* out = static_cast<gr_complex*>(output_items[0]);
             std::lock_guard<std::mutex> lock(m_queue->mtx);
 
+            // for each output sample, pop from the TX IQ queue if available; otherwise output 0.0f + 0.0f j (silence)
             for (int i = 0; i < noutput_items; ++i) {
                 if (!m_queue->txIQ.empty()) {
-                    out[i] = m_queue->txIQ.front();
+                    gr_complex sample = m_queue->txIQ.front();
                     m_queue->txIQ.pop_front();
+
+                    if (m_queue->txInvert)
+                        sample = -sample;
+
+                    out[i] = sample;
                 } else {
                     out[i] = gr_complex(0.0f, 0.0f);
                 }
@@ -335,7 +360,8 @@ namespace {
 
     private:
         /**
-         * @brief Initializes a new instance of the QueueSourceIQ class.
+         * @brief Private constructor for QueueSourceIQ. Use the static make() method to create instances.
+         * @param queue Shared pointer to the ChannelQueue instance for this modem channel.
          */
         explicit QueueSourceIQ(std::shared_ptr<ChannelQueue> queue) :
             gr::sync_block("dvmbb_tx_iq_queue_source",
@@ -343,11 +369,11 @@ namespace {
                            gr::io_signature::make(1, 1, sizeof(gr_complex))),
             m_queue(std::move(queue))
         {
+            /* stub */
         }
 
         std::shared_ptr<ChannelQueue> m_queue;
     };
-
     /**
      * @brief GNU Radio sync block that gates FM-modulated complex output.
      *
@@ -465,6 +491,8 @@ struct RadioManager::RMInternals {
      */
     struct DeviceRuntime {
         std::string args;
+
+        // RF parameters for this device, used to configure the SDR runtime flowgraph.
         bool canRx = true;
         bool canTx = true;
         double sampleRate = 960000.0;
@@ -484,6 +512,8 @@ struct RadioManager::RMInternals {
         double txCenter = 0.0;
         uint32_t decimInterpRatio = 1U;
 
+        // GNU Radio flowgraph components for this device. These are constructed and connected based on the current 
+        // channel configurations.
         gr::top_block_sptr tb;
         osmosdr::source::sptr src;
         osmosdr::sink::sptr sink;
@@ -1371,6 +1401,22 @@ void RadioManager::setChannelRF(uint8_t modemId, uint32_t rxFreq, uint32_t txFre
     }
 
     m_internal->applyHotRetune();
+}
+
+/* Updates modem channel sample polarity settings. */
+
+void RadioManager::setChannelPolarity(uint8_t modemId, bool rxInvert, bool txInvert)
+{
+    std::lock_guard<std::mutex> guard(m_internal->lock);
+
+    auto it = m_internal->channels.find(modemId);
+    if (it == m_internal->channels.end())
+        return;
+
+    auto& ch = it->second;
+    std::lock_guard<std::mutex> qlock(ch->mtx);
+    ch->rxInvert = rxInvert;
+    ch->txInvert = txInvert;
 }
 
 /* Queues modem-domain TX samples for SDR transmission. */

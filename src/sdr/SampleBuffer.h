@@ -53,7 +53,7 @@ public:
      * @param control
      * @returns bool 
      */
-    bool put(uint16_t sample, uint8_t control);
+    bool put(int16_t sample, uint8_t control);
 
     /**
      * @brief 
@@ -61,7 +61,7 @@ public:
      * @param[out] control
      * @returns bool 
      */
-    bool get(uint16_t& sample, uint8_t& control);
+    bool get(int16_t& sample, uint8_t& control);
 
     /**
      * @brief Flag indicating whether or not the ring buffer has overflowed.
@@ -71,7 +71,7 @@ public:
 
 private:
     uint16_t m_length;
-    volatile uint16_t* m_samples;
+    volatile int16_t* m_samples;
     volatile uint8_t* m_control;
 
     volatile uint16_t m_head;

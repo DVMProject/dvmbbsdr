@@ -91,6 +91,13 @@ namespace radio
          * @param rfPower RF power level hint.
          */
         void setChannelRF(uint8_t modemId, uint32_t rxFreq, uint32_t txFreq, uint8_t rfPower);
+    /**
+     * @brief Updates modem channel sample polarity settings.
+     * @param modemId 1-based modem identifier.
+     * @param rxInvert True when RX samples should be inverted.
+     * @param txInvert True when TX samples should be inverted.
+     */
+    void setChannelPolarity(uint8_t modemId, bool rxInvert, bool txInvert);
 
         /**
          * @brief Queues modem-domain TX samples for SDR transmission.

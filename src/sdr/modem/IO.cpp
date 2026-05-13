@@ -19,6 +19,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <algorithm>
 #include <chrono>
 
 using namespace modem;
@@ -80,8 +81,6 @@ const uint16_t NXDN_ISINC_FILTER_LEN = 32U;
 static q31_t DC_FILTER[] = { 3367972, 0, 3367972, 0, 2140747704, 0 }; // {b0, 0, b1, b2, -a1, -a2}
 const uint32_t DC_FILTER_STAGES = 1U; // One Biquad stage
 
-const uint16_t DC_OFFSET = 2048U;
-
 // ---------------------------------------------------------------------------
 //  Public Class Members
 // ---------------------------------------------------------------------------
@@ -103,13 +102,11 @@ IO::IO(modem::Modem* modem, bool debug) :
     m_pttInvert(false),
     m_rxLevel(128 * 128),
     m_rxInvert(false),
+    m_txInvert(false),
     m_cwIdTXLevel(128 * 128),
     m_dmrTXLevel(128 * 128),
     m_p25TXLevel(128 * 128),
-    m_rxDCOffset(DC_OFFSET),
-    m_txDCOffset(DC_OFFSET),
-    m_ledCount(0U),
-    m_ledValue(true),
+    m_nxdnTXLevel(128 * 128),
     m_detect(false),
     m_adcOverflow(0U),
     m_dacOverflow(0U),
@@ -224,7 +221,6 @@ void IO::start()
 
 void IO::process()
 {
-    m_ledCount++;
     if (m_started) {
         // Two seconds timeout
         if (m_watchdog >= 48000U) {
@@ -237,18 +233,8 @@ void IO::process()
 
             m_watchdog = 0U;
         }
-        if (m_ledCount >= 48000U) {
-            m_ledCount = 0U;
-            m_ledValue = !m_ledValue;
-            setLEDInt(m_ledValue);
-        }
     }
     else {
-        if (m_ledCount >= 480000U) {
-            m_ledCount = 0U;
-            m_ledValue = !m_ledValue;
-            setLEDInt(m_ledValue);
-        }
         return;
     }
 
@@ -289,15 +275,15 @@ void IO::process()
         uint16_t rssi[RX_BLOCK_SIZE];
 
         for (uint16_t i = 0U; i < RX_BLOCK_SIZE; i++) {
-            uint16_t sample;
+            int16_t sample = 0;
             m_rxBuffer.get(sample, control[i]);
             m_rssiBuffer.get(rssi[i]);
 
-            // Detect ADC overflow
-            if (m_detect && (sample == 0U || sample == 4095U))
+            // Detect ADC overflow.
+            if (m_detect && (sample == 32767 || sample == -32768))
                 m_adcOverflow++;
 
-            q15_t res1 = q15_t(sample) - m_rxDCOffset;
+            q15_t res1 = q15_t(sample);
             q31_t res2 = res1 * m_rxLevel;
             samples[i] = q15_t(__SSAT((res2 >> 15), 16));
         }
@@ -480,10 +466,10 @@ void IO::write(DVM_STATE mode, q15_t* samples, uint16_t length, const uint8_t* c
     for (uint16_t i = 0U; i < length; i++) {
         q31_t res1 = samples[i] * txLevel;
         q15_t res2 = q15_t(__SSAT((res1 >> 15), 16));
-        uint16_t res3 = uint16_t(res2 + m_txDCOffset);
+        int16_t res3 = static_cast<int16_t>(res2);
 
-        // Detect DAC overflow
-        if (res3 > 4095U)
+        // Detect DAC overflow.
+        if (res3 == 32767 || res3 == -32768)
             m_dacOverflow++;
 
         if (control == NULL)
@@ -559,7 +545,7 @@ void IO::setTransmit()
 
 void IO::interrupt()
 {
-    uint16_t sample = DC_OFFSET;
+    int16_t sample = 0;
     uint8_t control = MARK_NONE;
 
     std::vector<short> fmBatch;
@@ -567,12 +553,10 @@ void IO::interrupt()
 
     ::pthread_mutex_lock(&m_txLock);
     while (m_txBuffer.get(sample, control)) {
-        sample *= 4; // amplify by 12dB
-
         if (m_modulationMode == static_cast<uint8_t>(radio::ModulationMode::IQ_CQPSK)) {
             // IQ mode: forward complex samples immediately; imag stays zero until
             // CQPSK protocol engines generate true complex symbols.
-            iqBatch.push_back(std::complex<int16_t>(static_cast<int16_t>(sample), 0));
+            iqBatch.push_back(std::complex<int16_t>(sample, 0));
         } else {
             // FM mode: forward real samples immediately to avoid fixed chunk pacing.
             fmBatch.push_back(static_cast<short>(sample));
@@ -591,17 +575,18 @@ void IO::interrupt()
                 fmBatch.size() * sizeof(short));
         }
     }
-   
-    sample = 2048U;
+    sample = 0;
     m_watchdog++;
 }
 
 /* Sets various air interface parameters. */
 
 void IO::setParameters(bool rxInvert, bool txInvert, bool pttInvert, uint8_t rxLevel, uint8_t cwIdTXLevel, uint8_t dmrTXLevel,
-                       uint8_t p25TXLevel, uint8_t nxdnTXLevel, uint16_t txDCOffset, uint16_t rxDCOffset)
+                       uint8_t p25TXLevel, uint8_t nxdnTXLevel)
 {
     m_pttInvert = pttInvert;
+    m_rxInvert = rxInvert;
+    m_txInvert = txInvert;
 
     m_rxLevel = q15_t(rxLevel * 128);
     m_cwIdTXLevel = q15_t(cwIdTXLevel * 128);
@@ -609,23 +594,10 @@ void IO::setParameters(bool rxInvert, bool txInvert, bool pttInvert, uint8_t rxL
     m_p25TXLevel = q15_t(p25TXLevel * 128);
     m_nxdnTXLevel =  q15_t(nxdnTXLevel * 128);
 
-    m_rxDCOffset = DC_OFFSET + rxDCOffset;
-    m_txDCOffset = DC_OFFSET + txDCOffset;
-
     ::LogInfoEx(LOG_SDR, "Modem %u (%s) RX LVL: %u CWID TX LVL: %u DMR TX LVL: %u P25 TX LVL: %u NXDN TX LVL: %u", m_modem->m_modemId, m_modem->m_modemPty.c_str(), m_rxLevel, m_cwIdTXLevel, m_dmrTXLevel, m_p25TXLevel, m_nxdnTXLevel);
+    ::LogInfoEx(LOG_SDR, "Modem %u (%s) RX INVERT: %u TX INVERT: %u", m_modem->m_modemId, m_modem->m_modemPty.c_str(), m_rxInvert, m_txInvert);
 
-    if (rxInvert) {
-        m_rxInvert = rxInvert;
-        m_rxLevel = -m_rxLevel;
-    }
-
-    if (txInvert) {
-        m_dmrTXLevel = -m_dmrTXLevel;
-        m_p25TXLevel = -m_p25TXLevel;
-        m_nxdnTXLevel = -m_nxdnTXLevel;
-    }
-
-    ::LogInfoEx(LOG_SDR, "Modem %u (%s) RX INVERT: %u TX INVERT: %u RX DC OFFSET: %u TX DC OFFSET: %u", m_modem->m_modemId, m_modem->m_modemPty.c_str(), m_rxInvert, txInvert, m_rxDCOffset, m_txDCOffset);
+    radio::RadioManager::instance().setChannelPolarity(m_modem->m_modemId, m_rxInvert, m_txInvert);
 }
 
 /* Sets the software Rx sample level. */
@@ -633,9 +605,6 @@ void IO::setParameters(bool rxInvert, bool txInvert, bool pttInvert, uint8_t rxL
 void IO::setRXLevel(uint8_t rxLevel)
 {
     m_rxLevel = q15_t(rxLevel * 128);
-
-    if (m_rxInvert)
-        m_rxLevel = -m_rxLevel;
 }
 
 /* Sets the RF parameters. */
@@ -669,6 +638,7 @@ uint8_t IO::setRFParams(uint32_t rxFreq, uint32_t txFreq, uint8_t rfPower)
     m_txFrequency = txFreq;
 
     m_modem->setRFChannel(rxFreq, txFreq, rfPower);
+    radio::RadioManager::instance().setChannelPolarity(m_modem->m_modemId, m_rxInvert, m_txInvert);
 
     // Cache modulation mode so interrupt()/interruptRx() can branch without locking RadioManager.
     m_modulationMode = static_cast<uint8_t>(radio::RadioManager::instance().getChannelMode(m_modem->m_modemId));
@@ -815,13 +785,6 @@ void IO::startInt()
 bool IO::getCOSInt()
 {
     return m_cosInt;
-}
-
-/*  */
-
-void IO::setLEDInt(bool on)
-{
-    /* stub */
 }
 
 /*  */
@@ -1045,10 +1008,10 @@ void IO::interruptRx()
         ::pthread_mutex_lock(&m_rxLock);
 
         for (int i = 0; i < size; i += 2) {
-            short sample = 0;
+            int16_t sample = 0;
             ::memcpy(&sample, (uint8_t*)samples + i, sizeof(short));
 
-            m_rxBuffer.put((uint16_t)sample, control);
+            m_rxBuffer.put(sample, control);
             m_rssiBuffer.put(3U);
         }
         ::pthread_mutex_unlock(&m_rxLock);

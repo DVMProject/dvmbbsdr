@@ -644,7 +644,7 @@ void SerialPort::writeDebug(const char* text)
         return;
 
     if (m_modem->m_debug)
-        ::LogDebug("DSP_FW_API %s", text);
+        ::LogDebug(LOG_SDR, "DSP_FW_API %s", text);
 
     uint8_t reply[130U];
     ::memset(reply, 0x00U, 130U);
@@ -670,7 +670,7 @@ void SerialPort::writeDebug(const char* text, int16_t n1)
         return;
 
     if (m_modem->m_debug)
-        ::LogDebug("DSP_FW_API %s %X", text, n1);
+        ::LogDebug(LOG_SDR, "DSP_FW_API %s %X", text, n1);
 
     uint8_t reply[130U];
     ::memset(reply, 0x00U, 130U);
@@ -699,7 +699,7 @@ void SerialPort::writeDebug(const char* text, int16_t n1, int16_t n2)
         return;
 
     if (m_modem->m_debug)
-        ::LogDebug("DSP_FW_API %s %X %X", text, n1, n2);
+        ::LogDebug(LOG_SDR, "DSP_FW_API %s %X %X", text, n1, n2);
 
     uint8_t reply[130U];
     ::memset(reply, 0x00U, 130U);
@@ -731,7 +731,7 @@ void SerialPort::writeDebug(const char* text, int16_t n1, int16_t n2, int16_t n3
         return;
 
     if (m_modem->m_debug)
-        ::LogDebug("DSP_FW_API %s %X %X %X", text, n1, n2, n3);
+        ::LogDebug(LOG_SDR, "DSP_FW_API %s %X %X %X", text, n1, n2, n3);
 
     uint8_t reply[130U];
     ::memset(reply, 0x00U, 130U);
@@ -766,7 +766,7 @@ void SerialPort::writeDebug(const char* text, int16_t n1, int16_t n2, int16_t n3
         return;
 
     if (m_modem->m_debug)
-        ::LogDebug("DSP_FW_API %s %X %X %X %X", text, n1, n2, n3, n4);
+        ::LogDebug(LOG_SDR, "DSP_FW_API %s %X %X %X %X", text, n1, n2, n3, n4);
 
     uint8_t reply[130U];
     ::memset(reply, 0x00U, 130U);
@@ -1052,9 +1052,6 @@ uint8_t SerialPort::setConfig(const uint8_t* data, uint8_t length)
     uint8_t p25TXLevel = data[12U];
     uint8_t nxdnTXLevel = data[15U];
 
-    int16_t txDCOffset = int16_t(data[13U]) - 128;
-    int16_t rxDCOffset = int16_t(data[14U]) - 128;
-
     uint8_t p25CorrCount = data[11U];
     if (p25CorrCount > 255U)
         return RSN_INVALID_P25_CORR_COUNT;
@@ -1086,7 +1083,7 @@ uint8_t SerialPort::setConfig(const uint8_t* data, uint8_t length)
 
     //m_modem->m_nxdnRX.setCorrCount(nxdnCorrCount);
 
-    m_modem->m_io.setParameters(rxInvert, txInvert, pttInvert, rxLevel, cwIdTXLevel, dmrTXLevel, p25TXLevel, nxdnTXLevel, txDCOffset, rxDCOffset);
+    m_modem->m_io.setParameters(rxInvert, txInvert, pttInvert, rxLevel, cwIdTXLevel, dmrTXLevel, p25TXLevel, nxdnTXLevel);
 
     setMode(m_modem->m_modemState);
 

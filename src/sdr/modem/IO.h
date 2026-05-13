@@ -157,11 +157,9 @@ namespace modem
          * @param dmrTXLevel DMR Transmit Level.
          * @param p25TXLevel P25 Transmit Level.
          * @param nxdnTXLevel NXDN Transmit Level.
-         * @param txDCOffset Tx DC offset parameter.
-         * @param rxDCOffset Rx DC offset parameter.
          */
         void setParameters(bool rxInvert, bool txInvert, bool pttInvert, uint8_t rxLevel, uint8_t cwIdTXLevel, uint8_t dmrTXLevel,
-                        uint8_t p25TXLevel, uint8_t nxdnTXLevel, uint16_t txDCOffset, uint16_t rxDCOffset);
+                        uint8_t p25TXLevel, uint8_t nxdnTXLevel);
         /**
          * @brief Sets the software Rx sample level.
          * @param rxLevel Rx Level.
@@ -280,16 +278,11 @@ namespace modem
         bool m_pttInvert;
         q15_t m_rxLevel;
         bool m_rxInvert;
+        bool m_txInvert;
         q15_t m_cwIdTXLevel;
         q15_t m_dmrTXLevel;
         q15_t m_p25TXLevel;
         q15_t m_nxdnTXLevel;
-
-        uint16_t m_rxDCOffset;
-        uint16_t m_txDCOffset;
-
-        uint32_t m_ledCount;
-        bool m_ledValue;
 
         bool m_detect;
 
@@ -372,11 +365,6 @@ namespace modem
          */
         bool getCOSInt();
 
-        /**
-         * @brief 
-         * @param on 
-         */
-        void setLEDInt(bool on);
         /**
          * @brief 
          * @param on 
