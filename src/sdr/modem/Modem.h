@@ -256,6 +256,12 @@ namespace modem
          * @param length Length of buffer in bytes.
          */
         void transmitIQSamples(const uint8_t* samples, size_t length);
+
+        /**
+         * @brief Returns whether the SDR runtime still has pending TX samples for this modem.
+         * @return true if pending runtime TX data exists; otherwise false.
+         */
+        bool hasPendingRuntimeTx() const;
     };
 } // namespace modem
 

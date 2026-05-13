@@ -134,6 +134,12 @@ namespace radio
          * @return ModulationMode The modulation mode for the channel, or FM_C4FM if not found.
          */
         ModulationMode getChannelMode(uint8_t modemId);
+        /**
+         * @brief Returns whether modem TX data is pending in the SDR runtime queues.
+         * @param modemId 1-based modem identifier.
+         * @return true if FM or IQ TX queue has buffered samples; otherwise false.
+         */
+        bool hasPendingTx(uint8_t modemId);
 
     private:
         /**

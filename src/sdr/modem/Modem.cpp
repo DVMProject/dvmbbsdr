@@ -273,3 +273,10 @@ void Modem::transmitIQSamples(const uint8_t* samples, size_t length)
 {
     radio::RadioManager::instance().enqueueIQTx(m_modemId, samples, length);
 }
+
+/* Returns whether the SDR runtime still has pending TX samples for this modem. */
+
+bool Modem::hasPendingRuntimeTx() const
+{
+    return radio::RadioManager::instance().hasPendingTx(m_modemId);
+}

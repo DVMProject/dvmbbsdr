@@ -28,6 +28,7 @@
 #include <gnuradio/gr_complex.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <complex>
 #include <deque>
@@ -68,6 +69,10 @@ namespace {
         uint8_t rfPower = 0U;
         uint32_t rxDeviceIndex = 0U;
         uint32_t txDeviceIndex = 0U;
+
+        // FM path activity flag: true while QueueSource consumed real TX samples during
+        // the latest scheduler work cycle. Used to gate FM carrier output when idle.
+        std::atomic<bool> fmCarrierOn{false};
 
         radio::ModulationMode mode = radio::ModulationMode::FM_C4FM;
     };
@@ -219,12 +224,14 @@ namespace {
 
             auto* out = static_cast<float*>(output_items[0]);
             std::lock_guard<std::mutex> lock(m_queue->mtx);
+            bool hadData = false;
 
             // copy samples from channel queue to output buffer, pushing zeros if queue is empty
             for (int i = 0; i < noutput_items; ++i) {
                 if (!m_queue->tx.empty()) {
                     int16_t s = m_queue->tx.front();
                     m_queue->tx.pop_front();
+                    hadData = true;
 
                     float centered = (static_cast<float>(s) - 2048.0f) / 2048.0f;
                     out[i] = centered;
@@ -232,6 +239,8 @@ namespace {
                     out[i] = 0.0f;
                 }
             }
+
+            m_queue->fmCarrierOn.store(hadData, std::memory_order_relaxed);
 
             return noutput_items;
         }
@@ -246,6 +255,53 @@ namespace {
                            gr::io_signature::make(1, 1, sizeof(float))),
             m_queue(std::move(queue))
         {
+        }
+
+        std::shared_ptr<ChannelQueue> m_queue;
+    };
+
+    /**
+     * @brief GNU Radio sync block that gates FM-modulated complex output.
+     *
+     * frequency_modulator_fc emits a constant unit phasor when input is 0.0f,
+     * which appears as an unwanted always-on carrier. This block suppresses
+     * that by outputting zeros whenever the FM queue source is idle.
+     */
+    class FMCarrierGate : public gr::sync_block {
+    public:
+        typedef std::shared_ptr<FMCarrierGate> sptr;
+
+        static sptr make(std::shared_ptr<ChannelQueue> queue)
+        {
+            return gnuradio::get_initial_sptr(new FMCarrierGate(std::move(queue)));
+        }
+
+        int work(int noutput_items, gr_vector_const_void_star& input_items,
+            gr_vector_void_star& output_items) override
+        {
+            const auto* in = static_cast<const gr_complex*>(input_items[0]);
+            auto* out = static_cast<gr_complex*>(output_items[0]);
+
+            const bool carrierOn = m_queue->fmCarrierOn.load(std::memory_order_relaxed);
+            if (!carrierOn) {
+                for (int i = 0; i < noutput_items; ++i)
+                    out[i] = gr_complex(0.0f, 0.0f);
+            } else {
+                for (int i = 0; i < noutput_items; ++i)
+                    out[i] = in[i];
+            }
+
+            return noutput_items;
+        }
+
+    private:
+        explicit FMCarrierGate(std::shared_ptr<ChannelQueue> queue) :
+            gr::sync_block("dvmbb_tx_fm_carrier_gate",
+                gr::io_signature::make(1, 1, sizeof(gr_complex)),
+                gr::io_signature::make(1, 1, sizeof(gr_complex))),
+            m_queue(std::move(queue))
+        {
+            /* stub */
         }
 
         std::shared_ptr<ChannelQueue> m_queue;
@@ -339,6 +395,7 @@ struct RadioManager::RMInternals {
         QueueSource::sptr txIn;
         gr::filter::rational_resampler_fff::sptr txResamp;
         gr::analog::frequency_modulator_fc::sptr txFm;
+        FMCarrierGate::sptr txFmGate;
 
         // TX rotator (shared by both FM and IQ paths)
         gr::blocks::rotator_cc::sptr txShift;
@@ -906,10 +963,12 @@ struct RadioManager::RMInternals {
                     // FM mode: accept real audio from modem, resample, FM modulate, then shift.
                     graph.txIn = QueueSource::make(ch);
                     graph.txResamp = gr::filter::rational_resampler_fff::make(ratio, 1U);
-                    graph.txFm = gr::analog::frequency_modulator_fc::make(static_cast<float>((2.0 * kPi * 2500.0) / dev.sampleRate));
+                    graph.txFm = gr::analog::frequency_modulator_fc::make(static_cast<float>((2.0 * kPi * 1500.0) / dev.sampleRate));
+                    graph.txFmGate = FMCarrierGate::make(ch);
                     dev.tb->connect(graph.txIn, 0, graph.txResamp, 0);
                     dev.tb->connect(graph.txResamp, 0, graph.txFm, 0);
-                    dev.tb->connect(graph.txFm, 0, graph.txShift, 0);
+                    dev.tb->connect(graph.txFm, 0, graph.txFmGate, 0);
+                    dev.tb->connect(graph.txFmGate, 0, graph.txShift, 0);
                 }
 
                 dev.tb->connect(graph.txShift, 0, dev.txSum, inputIdx++);
@@ -1120,6 +1179,21 @@ radio::ModulationMode RadioManager::getChannelMode(uint8_t modemId)
         return radio::ModulationMode::FM_C4FM;
 
     return it->second->mode;
+}
+
+/* Returns whether modem TX data is pending in SDR runtime queues. */
+
+bool RadioManager::hasPendingTx(uint8_t modemId)
+{
+    std::lock_guard<std::mutex> guard(m_internal->lock);
+
+    auto it = m_internal->channels.find(modemId);
+    if (it == m_internal->channels.end())
+        return false;
+
+    auto& ch = it->second;
+    std::lock_guard<std::mutex> qlock(ch->mtx);
+    return !ch->tx.empty() || !ch->txIQ.empty();
 }
 
 // ---------------------------------------------------------------------------

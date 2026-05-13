@@ -239,9 +239,28 @@ void IO::process()
         m_lockout = getCOSInt();
     }
 
-    // Switch off the transmitter if needed
-    if (m_txBuffer.getData() == 0U && m_modem->m_tx) {
+    // Switch off the transmitter only when there is no queued or staged TX data.
+    // The TX ring can be empty while interrupt() is still holding unsent staged samples.
+    bool hasPendingTx = false;
+    ::pthread_mutex_lock(&m_txLock);
+    if (m_txBuffer.getData() > 0U) {
+        hasPendingTx = true;
+    } else if (m_modulationMode == static_cast<uint8_t>(radio::ModulationMode::IQ_CQPSK)) {
+        hasPendingTx = !m_audioBufTxIQ.empty();
+    } else {
+        hasPendingTx = !m_audioBufTx.empty();
+    }
+    ::pthread_mutex_unlock(&m_txLock);
+
+    // Also account for samples already handed off to the SDR runtime queue.
+    // Without this check, PTT can be dropped while GNU Radio still has pending carrier samples.
+    if (!hasPendingTx && m_modem->hasPendingRuntimeTx()) {
+        hasPendingTx = true;
+    }
+
+    if (!hasPendingTx && m_modem->m_tx) {
         m_modem->m_tx = false;
+        ::LogDebugEx(LOG_SDR, "IO::process()", "no Tx data, Transmitter OFF");
         setPTTInt(m_pttInvert ? true : false);
     }
 
@@ -415,6 +434,7 @@ void IO::write(DVM_STATE mode, q15_t* samples, uint16_t length, const uint8_t* c
     // Switch the transmitter on if needed
     if (!m_modem->m_tx) {
         m_modem->m_tx = true;
+        ::LogDebugEx(LOG_SDR, "IO::write()", "Transmitter ON, first sample written");
         setPTTInt(m_pttInvert ? false : true);
     }
 
@@ -499,10 +519,12 @@ void IO::setTransmit()
     // Switch the transmitter on if needed
     if (!m_modem->m_tx) {
         m_modem->m_tx = true;
+        ::LogDebugEx(LOG_SDR, "IO::setTransmit()", "Transmitter ON");
         setPTTInt(m_pttInvert ? false : true);
     }
     else {
         m_modem->m_tx = false;
+        ::LogDebugEx(LOG_SDR, "IO::setTransmit()", "Transmitter OFF");
         setPTTInt(m_pttInvert ? true : false);
     }
 }
@@ -514,52 +536,35 @@ void IO::interrupt()
     uint16_t sample = DC_OFFSET;
     uint8_t control = MARK_NONE;
 
+    std::vector<short> fmBatch;
+    std::vector<std::complex<int16_t>> iqBatch;
+
     ::pthread_mutex_lock(&m_txLock);
     while (m_txBuffer.get(sample, control)) {
-        sample *= 5; // amplify by 12dB
+        sample *= 4; // amplify by 12dB
 
         if (m_modulationMode == static_cast<uint8_t>(radio::ModulationMode::IQ_CQPSK)) {
-            // IQ mode: accumulate as complex<int16_t> samples.
-            // The real part carries the baseband symbol value; imaginary part is zero until
-            // a CQPSK protocol engine populates it directly (future work, step 6).
-            if (m_audioBufTxIQ.size() >= 720) {
-                uint8_t sampleBuffer[720 * sizeof(std::complex<int16_t>)];
-                ::memset(sampleBuffer, 0, sizeof(sampleBuffer));
-                ::memcpy(sampleBuffer, m_audioBufTxIQ.data(), 720 * sizeof(std::complex<int16_t>));
-
-                m_modem->transmitIQSamples(sampleBuffer, 720 * sizeof(std::complex<int16_t>));
-                ::usleep(9600 * 3);
-
-                m_audioBufTxIQ.erase(m_audioBufTxIQ.begin(), m_audioBufTxIQ.begin() + 720);
-                m_audioBufTxIQ.push_back(std::complex<int16_t>(static_cast<int16_t>(sample), 0));
-            } else {
-                m_audioBufTxIQ.push_back(std::complex<int16_t>(static_cast<int16_t>(sample), 0));
-            }
+            // IQ mode: forward complex samples immediately; imag stays zero until
+            // CQPSK protocol engines generate true complex symbols.
+            iqBatch.push_back(std::complex<int16_t>(static_cast<int16_t>(sample), 0));
         } else {
-            // FM mode: accumulate as real short samples and transmit as FM audio stream.
-            if (m_audioBufTx.size() >= 720) {
-                /*
-                ** bryanb: because dvmbbsdr currently creates FM modulated stream for now --
-                **  this function is where we would transmit the modulated carrier for a specific modem;
-                **  when this can send modulated I/Q we will likely need to change this
-                ** TODO TODO TODO
-                */
-
-                uint8_t sampleBuffer[720 * sizeof(short)];
-                ::memset(sampleBuffer, 0, 720 * sizeof(short));
-                ::memcpy(sampleBuffer, (unsigned char*)m_audioBufTx.data(), 720 * sizeof(short));
-
-                m_modem->transmitFMSamples(sampleBuffer, 720 * sizeof(short));
-                ::usleep(9600 * 3);
-
-                m_audioBufTx.erase(m_audioBufTx.begin(), m_audioBufTx.begin() + 720);
-                m_audioBufTx.push_back((short)sample);
-            } else {
-                m_audioBufTx.push_back((short)sample);
-            }
+            // FM mode: forward real samples immediately to avoid fixed chunk pacing.
+            fmBatch.push_back(static_cast<short>(sample));
         }
     }
     ::pthread_mutex_unlock(&m_txLock);
+
+    if (m_modulationMode == static_cast<uint8_t>(radio::ModulationMode::IQ_CQPSK)) {
+        if (!iqBatch.empty()) {
+            m_modem->transmitIQSamples(reinterpret_cast<const uint8_t*>(iqBatch.data()),
+                iqBatch.size() * sizeof(std::complex<int16_t>));
+        }
+    } else {
+        if (!fmBatch.empty()) {
+            m_modem->transmitFMSamples(reinterpret_cast<const uint8_t*>(fmBatch.data()),
+                fmBatch.size() * sizeof(short));
+        }
+    }
    
     sample = 2048U;
     m_watchdog++;
@@ -892,8 +897,22 @@ void* IO::txThreadHelper(void* arg)
 
     while (!p->m_abort)
     {
-        if (p->m_txBuffer.getData() < 1)
-            usleep(20);
+        bool hasPendingTx = false;
+        ::pthread_mutex_lock(&p->m_txLock);
+        if (p->m_txBuffer.getData() > 0U) {
+            hasPendingTx = true;
+        } else if (p->m_modulationMode == static_cast<uint8_t>(radio::ModulationMode::IQ_CQPSK)) {
+            hasPendingTx = !p->m_audioBufTxIQ.empty();
+        } else {
+            hasPendingTx = !p->m_audioBufTx.empty();
+        }
+        ::pthread_mutex_unlock(&p->m_txLock);
+
+        if (!hasPendingTx) {
+            ::usleep(1000U);
+            continue;
+        }
+
         p->interrupt();
     }
 
