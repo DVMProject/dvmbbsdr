@@ -19,8 +19,20 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <chrono>
 
 using namespace modem;
+
+namespace {
+    constexpr uint64_t kRxRfReportIntervalMs = 1000U;
+    constexpr uint64_t kRxRfIdleIntervalMs = 500U;
+
+    uint64_t monotonicMs()
+    {
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    }
+}
 
 // ---------------------------------------------------------------------------
 //  Constants
@@ -76,7 +88,7 @@ const uint16_t DC_OFFSET = 2048U;
 
 /* Initializes a new instance of the IO class. */
 
-IO::IO(modem::Modem* modem) :
+IO::IO(modem::Modem* modem, bool debug) :
     m_modem(modem),
     m_started(false),
     m_rxBuffer(RX_RINGBUFFER_SIZE),
@@ -117,6 +129,11 @@ IO::IO(modem::Modem* modem) :
     m_audioBufRxIQ(),
     m_modulationMode(0U),
     m_abort(false),
+    m_rxRfActive(false),
+    m_rxRfLastDataMs(0U),
+    m_rxRfLastReportMs(0U),
+    m_rxRfBytes(0U),
+    m_rxRfBursts(0U),
     m_cosPrev(false),
     m_cosInt(false),
     m_pttPrev(false),
@@ -126,7 +143,8 @@ IO::IO(modem::Modem* modem) :
     m_p25ModeToggle(false),
     m_p25Mode(false),
     m_nxdnModeToggle(false),
-    m_nxdnMode(false)
+    m_nxdnMode(false),
+    m_debug(debug)
 {
     ::memset(m_rrc_0_2_State, 0x00U, 70U * sizeof(q15_t));
     ::memset(m_boxcar_5_State, 0x00U, 30U * sizeof(q15_t));
@@ -260,7 +278,8 @@ void IO::process()
 
     if (!hasPendingTx && m_modem->m_tx) {
         m_modem->m_tx = false;
-        ::LogDebugEx(LOG_SDR, "IO::process()", "no Tx data, Transmitter OFF");
+        if (m_debug)
+            ::LogDebugEx(LOG_SDR, "IO::process()", "no Tx data, TX OFF");
         setPTTInt(m_pttInvert ? true : false);
     }
 
@@ -434,7 +453,8 @@ void IO::write(DVM_STATE mode, q15_t* samples, uint16_t length, const uint8_t* c
     // Switch the transmitter on if needed
     if (!m_modem->m_tx) {
         m_modem->m_tx = true;
-        ::LogDebugEx(LOG_SDR, "IO::write()", "Transmitter ON, first sample written");
+        if (m_debug)
+            ::LogDebugEx(LOG_SDR, "IO::write()", "TX ON, first sample written");
         setPTTInt(m_pttInvert ? false : true);
     }
 
@@ -454,6 +474,9 @@ void IO::write(DVM_STATE mode, q15_t* samples, uint16_t length, const uint8_t* c
         break;
     }
 
+    // TX ring is consumed by the dedicated TX thread; writes must be serialized
+    // with reads to prevent ring index corruption under load.
+    ::pthread_mutex_lock(&m_txLock);
     for (uint16_t i = 0U; i < length; i++) {
         q31_t res1 = samples[i] * txLevel;
         q15_t res2 = q15_t(__SSAT((res1 >> 15), 16));
@@ -468,6 +491,7 @@ void IO::write(DVM_STATE mode, q15_t* samples, uint16_t length, const uint8_t* c
         else
             m_txBuffer.put(res3, control[i]);
     }
+    ::pthread_mutex_unlock(&m_txLock);
 }
 
 /* Helper to get how much space the transmit ring buffer has for samples. */
@@ -519,12 +543,14 @@ void IO::setTransmit()
     // Switch the transmitter on if needed
     if (!m_modem->m_tx) {
         m_modem->m_tx = true;
-        ::LogDebugEx(LOG_SDR, "IO::setTransmit()", "Transmitter ON");
+        if (m_debug)
+            ::LogDebugEx(LOG_SDR, "IO::setTransmit()", "TX ON");
         setPTTInt(m_pttInvert ? false : true);
     }
     else {
         m_modem->m_tx = false;
-        ::LogDebugEx(LOG_SDR, "IO::setTransmit()", "Transmitter OFF");
+        if (m_debug)
+            ::LogDebugEx(LOG_SDR, "IO::setTransmit()", "TX OFF");
         setPTTInt(m_pttInvert ? true : false);
     }
 }
@@ -921,6 +947,51 @@ void* IO::txThreadHelper(void* arg)
 
 /*  */
 
+void IO::noteRxRfActivity(uint32_t bytes, bool iqMode)
+{
+    const uint64_t now = monotonicMs();
+    m_rxRfLastDataMs = now;
+    m_rxRfBytes += bytes;
+    m_rxRfBursts++;
+
+    if (!m_rxRfActive) {
+        m_rxRfActive = true;
+        m_rxRfLastReportMs = now;
+        ::LogDebugEx(LOG_SDR, "IO::interruptRx()", "Modem %u (%s) SDR RX ACTIVE (%s)",
+            m_modem->m_modemId, m_modem->m_modemPty.c_str(), iqMode ? "IQ" : "FM");
+        return;
+    }
+
+    if ((now - m_rxRfLastReportMs) >= kRxRfReportIntervalMs) {
+        const unsigned long long elapsedMs = static_cast<unsigned long long>(now - m_rxRfLastReportMs);
+        ::LogDebugEx(LOG_SDR, "IO::interruptRx()", "Modem %u (%s) SDR RX ACTIVE (%s), %u bytes in %u bursts over %llums",
+            m_modem->m_modemId, m_modem->m_modemPty.c_str(), iqMode ? "IQ" : "FM", m_rxRfBytes, m_rxRfBursts, elapsedMs);
+
+        m_rxRfBytes = 0U;
+        m_rxRfBursts = 0U;
+        m_rxRfLastReportMs = now;
+    }
+}
+
+/*  */
+
+void IO::noteRxRfIdle()
+{
+    if (!m_rxRfActive)
+        return;
+
+    const uint64_t now = monotonicMs();
+    if ((now - m_rxRfLastDataMs) < kRxRfIdleIntervalMs)
+        return;
+
+    ::LogDebugEx(LOG_SDR, "IO::interruptRx()", "Modem %u (%s) SDR RX IDLE", m_modem->m_modemId, m_modem->m_modemPty.c_str());
+    m_rxRfActive = false;
+    m_rxRfBytes = 0U;
+    m_rxRfBursts = 0U;
+}
+
+/*  */
+
 void IO::interruptRx()
 {
     uint8_t control = MARK_NONE;
@@ -934,8 +1005,14 @@ void IO::interruptRx()
         */
         uint8_t* samples = nullptr;
         int size = m_modem->readIQSamples(samples);
-        if (size < 1)
+        if (size < 1) {
+            if (m_debug)
+                noteRxRfIdle();
             return;
+        }
+
+        if (m_debug)
+            noteRxRfActivity(static_cast<uint32_t>(size), true);
 
         ::pthread_mutex_lock(&m_rxLock);
         const int stride = static_cast<int>(sizeof(std::complex<int16_t>));
@@ -956,8 +1033,14 @@ void IO::interruptRx()
         */
         uint8_t* samples = nullptr;
         int size = m_modem->readFMSamples(samples);
-        if (size < 1)
+        if (size < 1) {
+            if (m_debug)
+                noteRxRfIdle();
             return;
+        }
+
+        if (m_debug)
+            noteRxRfActivity(static_cast<uint32_t>(size), false);
 
         ::pthread_mutex_lock(&m_rxLock);
 

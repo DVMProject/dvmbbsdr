@@ -141,6 +141,12 @@ namespace radio
          */
         bool hasPendingTx(uint8_t modemId);
 
+        /**
+         * @brief Enables or disables debug logging for the RadioManager.
+         * @param debug True to enable debug logs, false to disable.
+         */
+        void setDebug(bool debug);
+
     private:
         /**
          * @brief Initializes a new instance of the RadioManager class.
@@ -156,6 +162,8 @@ namespace radio
 
         struct RMInternals;
         RMInternals* m_internal;
+
+        bool m_debug;
     };
 }
 

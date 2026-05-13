@@ -60,12 +60,22 @@ sdr:
 
     # Optional fallback values used when fields are omitted in individual devices.
     defaults:
+        # Wideband sample rate used for channelization and multi-carrier operation.
         sampleRate: 960000
+
+        # Gain controls (dB).
         rxGain: 30
         txGain: 30
+
+        # Center-frequency correction in PPM.
         freqCorrPpm: 0
-        rxAntenna: ""
-        txAntenna: ""
+
+        # Optional: publish wideband RX IQ samples to ZeroMQ for external FFT viewers.
+        # Empty string disables export.
+        # Example: "tcp://127.0.0.1:5557"
+        #rxIqTapAddress: "tcp://127.0.0.1:5557"
+        # Optional PUB topic prefix. Leave empty to publish without topic framing.
+        #rxIqTapTopic: ""
 
     # Wideband channelization and transmission settings.
     # Rebuild-free hot retune is used when only channel frequencies change.
@@ -84,23 +94,46 @@ sdr:
           txGain: 30
 
           # Optional antenna names (driver dependent; blank = default).
+          #rxAntenna: ""
+          #txAntenna: ""
+
+          # Optional frontend bandwidth hints (Hz); 0 = automatic.
+          #rxBandwidth: 0
+          #txBandwidth: 0
+
+          # Optional per-device override for RX IQ ZeroMQ export tap.
+          #rxIqTapAddress: "tcp://127.0.0.1:5557"
+          #rxIqTapTopic: "sdr0"
+
+        # Device 1: USRP (TX+RX capable)
+        - args: "driver=uhd,addr=192.168.10.2"
+
+          # Wideband sample rate used for channelization and multi-carrier operation.
+          sampleRate: 960000
+
+          # Center-frequency correction in PPM.
+          freqCorrPpm: 0
+
+          # Gain controls (dB).
+          rxGain: 30
+          txGain: 30
+
+          # Optional antenna names (driver dependent; blank = default).
           rxAntenna: ""
           txAntenna: ""
 
           # Optional frontend bandwidth hints (Hz); 0 = automatic.
-          rxBandwidth: 0
-          txBandwidth: 0
+          #rxBandwidth: 0
+          #txBandwidth: 0
 
-        # Device 1: USRP (TX+RX capable)
-        - args: "driver=uhd,addr=192.168.10.2"
-          sampleRate: 960000
-          freqCorrPpm: 0
-          rxGain: 30
-          txGain: 30
-          rxAntenna: ""
-          txAntenna: ""
-          rxBandwidth: 0
-          txBandwidth: 0
+          # Optional per-device override for RX IQ ZeroMQ export tap.
+          #rxIqTapAddress: "tcp://127.0.0.1:5558"
+          #rxIqTapTopic: "sdr1"
+
+    # Optional runtime status publisher for live SDR center/sample-rate updates over ZeroMQ.
+    # This avoids filesystem polling and is preferred for dynamic retune visualization.
+    #runtimeStatusPubAddress: "tcp://127.0.0.1:5567"
+    #runtimeStatusPubTopic: "radio-state"
 
 #
 # Virtual Modem Configuration
@@ -112,10 +145,6 @@ modems:
         # UART/RS232 serial port speed. (The default speed of 115200, should not be
         # changed unless the speed is also changed in the firmware of the modem.)
         speed: 115200
-      # Flag indicating whether or not verbose logging is enabled.
-      verbose: true
-      # Flag indicating whether or not debug logging is enabled.
-      debug: false
 
       #
       # SDR Radio
@@ -138,10 +167,6 @@ modems:
         # UART/RS232 serial port speed. (The default speed of 115200, should not be
         # changed unless the speed is also changed in the firmware of the modem.)
         speed: 115200
-      # Flag indicating whether or not verbose logging is enabled.
-      verbose: true
-      # Flag indicating whether or not debug logging is enabled.
-      debug: false
 
       #
       # SDR Radio

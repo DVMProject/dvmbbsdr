@@ -92,7 +92,7 @@ namespace modem
         /**
          * @brief Initializes a new instance of the IO class.
          */
-        IO(modem::Modem* modem);
+        IO(modem::Modem* modem, bool debug);
         /**
          * @brief Finalizes a new instance of the IO class.
          */
@@ -339,6 +339,13 @@ namespace modem
 
         bool m_abort;
 
+        // RX activity debug state used to report when SDR RF samples are flowing.
+        bool m_rxRfActive;
+        uint64_t m_rxRfLastDataMs;
+        uint64_t m_rxRfLastReportMs;
+        uint32_t m_rxRfBytes;
+        uint32_t m_rxRfBursts;
+
         bool m_cosPrev;
         bool m_cosInt;
 
@@ -351,6 +358,8 @@ namespace modem
         bool m_p25Mode;
         bool m_nxdnModeToggle;
         bool m_nxdnMode;
+
+        bool m_debug;
 
         // Hardware specific routines
         /**
@@ -414,6 +423,18 @@ namespace modem
          * @returns void* 
          */
         static void* txThreadHelper(void* arg);
+
+        /**
+         * @brief Updates RX activity counters and emits throttled debug logs while SDR samples flow.
+         * @param bytes Number of bytes dequeued from SDR runtime.
+         * @param iqMode True when channel is in IQ mode, false for FM mode.
+         */
+        void noteRxRfActivity(uint32_t bytes, bool iqMode);
+        /**
+         * @brief Emits an idle transition log after SDR RX has been quiet for a short interval.
+         */
+        void noteRxRfIdle();
+
         /**
          * @brief 
          * @param interruptRx 

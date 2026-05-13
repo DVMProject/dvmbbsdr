@@ -31,6 +31,7 @@ target_link_libraries(dvmbbsdr PRIVATE common ${OPENSSL_LIBRARIES} ${LIBDW_LIBRA
     ${GNURADIO_DIGITAL_LIBRARIES} 
     ${GNURADIO_ANALOG_LIBRARIES} 
     ${GNURADIO_AUDIO_LIBRARIES} 
+    ${GNURADIO_ZEROMQ_LIBRARIES}
     ${GNURADIO_UHD_LIBRARIES} 
     ${UHD_LIBRARIES} 
     ${GNURADIO_BLOCKS_LIBRARIES} 
@@ -43,9 +44,18 @@ target_link_libraries(dvmbbsdr PRIVATE common ${OPENSSL_LIBRARIES} ${LIBDW_LIBRA
     Threads::Threads 
     util)
 
+if(TARGET gnuradio::gnuradio-zeromq)
+    target_link_libraries(dvmbbsdr PRIVATE gnuradio::gnuradio-zeromq)
+endif()
+
+if(GNURADIO_ZEROMQ_LIBRARIES OR TARGET gnuradio::gnuradio-zeromq)
+    target_link_libraries(dvmbbsdr PRIVATE zmq)
+endif()
+
 target_include_directories(dvmbbsdr PRIVATE ${OPENSSL_INCLUDE_DIR} ${LIBDW_INCLUDE_DIR} 
     ${Boost_INCLUDE_DIRS} 
     ${GNURADIO_RUNTIME_INCLUDE_DIRS} 
+    ${GNURADIO_ZEROMQ_INCLUDE_DIRS}
     ${GNURADIO_OSMOSDR_INCLUDE_DIRS} 
     src 
     src/sdr)

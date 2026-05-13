@@ -135,6 +135,15 @@ if(Gnuradio_VERSION VERSION_LESS "3.8")
     find_package(Volk)
 endif()
 
+# Optional GNU Radio ZeroMQ blocks used for headless RX FFT/export taps.
+find_package(Gnuradio QUIET COMPONENTS zeromq)
+if(GNURADIO_ZEROMQ_LIBRARIES OR TARGET gnuradio::gnuradio-zeromq)
+    add_definitions(-DHAS_GNURADIO_ZEROMQ=1)
+    message(STATUS "GnuRadio ZeroMQ support: enabled")
+else()
+    message(STATUS "GnuRadio ZeroMQ support: disabled")
+endif()
+
 if(NOT CMAKE_MODULES_DIR)
   set(CMAKE_MODULES_DIR lib${LIB_SUFFIX}/cmake)
 endif(NOT CMAKE_MODULES_DIR)
@@ -214,7 +223,7 @@ endif()
 add_definitions(-DGNURADIO_VERSION=${GNURADIO_VERSION})
 message(STATUS "Gnuradio Version is: " ${Gnuradio_VERSION})
 
-include_directories(${Boost_INCLUDE_DIRS} ${GNURADIO_RUNTIME_INCLUDE_DIRS} ${GNURADIO_OSMOSDR_INCLUDE_DIRS} ${CMAKE_BINARY_DIR}/lib ${CMAKE_BINARY_DIR}/include ${OPENSSL_INCLUDE_DIR})
+include_directories(${Boost_INCLUDE_DIRS} ${GNURADIO_RUNTIME_INCLUDE_DIRS} ${GNURADIO_OSMOSDR_INCLUDE_DIRS} ${GNURADIO_ZEROMQ_INCLUDE_DIRS} ${CMAKE_BINARY_DIR}/lib ${CMAKE_BINARY_DIR}/include ${OPENSSL_INCLUDE_DIR})
 link_directories(${Boost_LIBRARY_DIRS} ${GNURADIO_RUNTIME_LIBRARY_DIRS} ${GROSMOSDR_LIBRARIES_DIRS} ${GNURADIO_UHD_LIBRARIES_DIRS} ${UHD_LIBRARIES_DIRS} ${OPENSSL_ROOT_DIR}/lib)
 
 #

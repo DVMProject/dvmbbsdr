@@ -36,7 +36,7 @@ Modem::Modem(port::IModemPort* port, uint8_t id, std::string ptyPort, bool verbo
     m_tx(false),
     m_dcd(false),
     m_serial(this),
-    m_io(this),
+    m_io(this, debug),
     m_verbose(verbose),
     m_debug(debug),
     m_dmrIdleRX(this),
@@ -71,13 +71,6 @@ bool Modem::open()
     bool ret = m_port->open();
     if (!ret)
         return false;
-
-    /*
-    ** TODO TODO TODO: this should probably be setting up whatever is needed
-    **  on GNU Radio to be prepared for a carrier frequency -- we have a bit of a chick and egg
-    **  problem though, because we aren't *told* what frequency we'll be on until the dvmhost attaches
-    **  and sends the SET_RF_PARAMS command via the PTY
-    */
 
     /*
     ** Initialize Threads
@@ -129,11 +122,6 @@ void Modem::clock(uint32_t ms)
 void Modem::close()
 {
     m_port->close();
-
-    /*
-    ** TODO TODO TODO: this should probably be shutdown whatever is needed
-    **  on GNU Radio for a running carrier frequency
-    */
 }
 
 /* */

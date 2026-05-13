@@ -135,6 +135,8 @@ int SDR::run()
         return EXIT_FAILURE;
     }
 
+    radio::RadioManager::instance().setDebug(m_debug);
+
     // initialize modems
     ret = createModems();
     if (!ret)
@@ -194,8 +196,78 @@ bool SDR::readParams()
 
     LogInfo("General Parameters");
 
+    LogInfo("    Trace: %s", m_trace ? "yes" : "no");
+
     if (m_debug) {
         LogInfo("    Debug: yes");
+    }
+
+    LogInfo("SDR Default Device Parameters");
+    
+    yaml::Node sdrConf = m_conf["sdr"];
+    yaml::Node sdrDefaults = sdrConf["defaults"];
+
+    double defaultSampleRate = sdrDefaults["sampleRate"].as<double>(960000.0);
+    double defaultRxGain = sdrDefaults["rxGain"].as<double>(0.0);
+    double defaultTxGain = sdrDefaults["txGain"].as<double>(0.0);
+    double defaultFreqCorrPpm = sdrDefaults["freqCorrPpm"].as<double>(0.0);
+
+#if defined(HAS_GNURADIO_ZEROMQ)
+    std::string rxIqTapAddress = sdrDefaults["rxIqTapAddress"].as<std::string>("");
+    std::string rxIqTapTopic = sdrDefaults["rxIqTapTopic"].as<std::string>("");
+#else
+    if (!sdrDefaults["rxIqTapAddress"].isNone()) {
+        ::LogWarning(LOG_SDR, "SDR %zu defines rxIqTapAddress, but this build has no gnuradio-zeromq support", i);
+    }
+#endif
+
+    LogInfo("    Sample Rate: %f", defaultSampleRate);
+    LogInfo("    RX Gain: %f", defaultRxGain);
+    LogInfo("    TX Gain: %f", defaultTxGain);
+    LogInfo("    Frequency Correction PPM: %f", defaultFreqCorrPpm);
+
+    if (!rxIqTapAddress.empty()) {
+        LogInfo("    RX IQ Tap Address: %s", rxIqTapAddress.c_str());
+        LogInfo("    RX IQ Tap Topic: %s", rxIqTapTopic.c_str());
+    }
+
+    LogInfo("SDR Device Parameters");
+
+    yaml::Node devicesNode = sdrConf["devices"];
+    if (devicesNode.size() == 0U) {
+        LogInfo("    No SDR devices defined, using default configuration");
+    }
+    else {
+        for (size_t i = 0; i < devicesNode.size(); ++i) {
+            yaml::Node& dev = devicesNode[i];
+            std::string args = dev["args"].as<std::string>("");
+            double sampleRate = dev["sampleRate"].as<double>(defaultSampleRate);
+            double rxGain = dev["rxGain"].as<double>(defaultRxGain);
+            double txGain = dev["txGain"].as<double>(defaultTxGain);
+            double freqCorrPpm = dev["freqCorrPpm"].as<double>(defaultFreqCorrPpm);
+            std::string rxAntenna = dev["rxAntenna"].as<std::string>("");
+            std::string txAntenna = dev["txAntenna"].as<std::string>("");
+#if defined(HAS_GNURADIO_ZEROMQ)
+            std::string rxIqTapAddress = dev["rxIqTapAddress"].as<std::string>("");
+            std::string rxIqTapTopic = dev["rxIqTapTopic"].as<std::string>("");
+#else
+            if (!dev["rxIqTapAddress"].isNone()) {
+                ::LogWarning(LOG_SDR, "SDR %zu defines rxIqTapAddress, but this build has no gnuradio-zeromq support", i);
+            }
+#endif
+            LogInfo("    SDR %zu:", i);
+            LogInfo("        Args: %s", args.c_str());
+            LogInfo("        Sample Rate: %f", sampleRate);
+            LogInfo("        RX Gain: %f", rxGain);
+            LogInfo("        TX Gain: %f", txGain);
+            LogInfo("        Frequency Correction PPM: %f", freqCorrPpm);
+            LogInfo("        RX Antenna: %s", rxAntenna.empty() ? "default" : rxAntenna.c_str());
+            LogInfo("        TX Antenna: %s", txAntenna.empty() ? "default" : txAntenna.c_str());
+            if (!rxIqTapAddress.empty()) {
+                LogInfo("        RX IQ Tap Address: %s", rxIqTapAddress.c_str());
+                LogInfo("        RX IQ Tap Topic: %s", rxIqTapTopic.c_str());
+            }
+        }
     }
 
     return true;
@@ -214,8 +286,8 @@ bool SDR::createModems()
             std::string uartPort = modemProtocol["port"].as<std::string>();
             uint32_t uartSpeed = modemProtocol["speed"].as<uint32_t>(115200);
 
-            bool trace = modemConf["trace"].as<bool>(false);
-            bool debug = modemConf["debug"].as<bool>(false);
+            bool trace = m_trace;
+            bool debug = m_debug;
 
             // if modem debug is being forced from the commandline -- enable modem debug
             if (g_debug) {
@@ -226,10 +298,6 @@ bool SDR::createModems()
             LogInfo("    Port Type: %s", PTY_PORT);
             LogInfo("    PTY Port: %s", uartPort.c_str());
             LogInfo("    PTY Speed: %u", uartSpeed);
-
-            if (debug) {
-                LogInfo("    Debug: yes");
-            }
 
             port::IModemPort* modemPort = nullptr;
             port::SERIAL_SPEED serialSpeed = port::SERIAL_115200;

@@ -21,6 +21,9 @@
 #include <gnuradio/io_signature.h>
 #include <gnuradio/sync_block.h>
 #include <gnuradio/top_block.h>
+#if defined(HAS_GNURADIO_ZEROMQ)
+#include <gnuradio/zeromq/pub_sink.h>
+#endif
 
 #include <osmosdr/sink.h>
 #include <osmosdr/source.h>
@@ -29,6 +32,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <complex>
 #include <deque>
@@ -38,6 +42,9 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#if defined(HAS_GNURADIO_ZEROMQ)
+#include <zmq.h>
+#endif
 
 using namespace radio;
 
@@ -49,6 +56,30 @@ namespace {
     constexpr double kPi = 3.14159265358979323846;
     constexpr double kChannelBandwidth = 12500.0;
     constexpr double kTransitionBandwidth = 2500.0;
+
+    /**
+     * @brief Utility function to escape a string for JSON encoding.
+     * @param in Input string to escape.
+     * @returns Escaped string safe for JSON encoding.
+     */
+    static std::string jsonEscape(const std::string& in)
+    {
+        std::string out;
+        out.reserve(in.size());
+        for (const char c : in) {
+            switch (c) {
+            case '\\': out += "\\\\"; break;
+            case '"':  out += "\\\""; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                out += c;
+                break;
+            }
+        }
+        return out;
+    }
 
     /**
      * @brief GNU Radio sync block to consume RX samples from a flowgraph and push to a modem queue.
@@ -261,53 +292,6 @@ namespace {
     };
 
     /**
-     * @brief GNU Radio sync block that gates FM-modulated complex output.
-     *
-     * frequency_modulator_fc emits a constant unit phasor when input is 0.0f,
-     * which appears as an unwanted always-on carrier. This block suppresses
-     * that by outputting zeros whenever the FM queue source is idle.
-     */
-    class FMCarrierGate : public gr::sync_block {
-    public:
-        typedef std::shared_ptr<FMCarrierGate> sptr;
-
-        static sptr make(std::shared_ptr<ChannelQueue> queue)
-        {
-            return gnuradio::get_initial_sptr(new FMCarrierGate(std::move(queue)));
-        }
-
-        int work(int noutput_items, gr_vector_const_void_star& input_items,
-            gr_vector_void_star& output_items) override
-        {
-            const auto* in = static_cast<const gr_complex*>(input_items[0]);
-            auto* out = static_cast<gr_complex*>(output_items[0]);
-
-            const bool carrierOn = m_queue->fmCarrierOn.load(std::memory_order_relaxed);
-            if (!carrierOn) {
-                for (int i = 0; i < noutput_items; ++i)
-                    out[i] = gr_complex(0.0f, 0.0f);
-            } else {
-                for (int i = 0; i < noutput_items; ++i)
-                    out[i] = in[i];
-            }
-
-            return noutput_items;
-        }
-
-    private:
-        explicit FMCarrierGate(std::shared_ptr<ChannelQueue> queue) :
-            gr::sync_block("dvmbb_tx_fm_carrier_gate",
-                gr::io_signature::make(1, 1, sizeof(gr_complex)),
-                gr::io_signature::make(1, 1, sizeof(gr_complex))),
-            m_queue(std::move(queue))
-        {
-            /* stub */
-        }
-
-        std::shared_ptr<ChannelQueue> m_queue;
-    };
-
-    /**
      * @brief GNU Radio sync block to produce complex TX I/Q samples from a modem IQ queue and push to a flowgraph.
      * Used in IQ_CQPSK modulation mode; outputs gr_complex samples directly to the rotator and SDR sink,
      * bypassing FM modulation.
@@ -363,6 +347,74 @@ namespace {
 
         std::shared_ptr<ChannelQueue> m_queue;
     };
+
+    /**
+     * @brief GNU Radio sync block that gates FM-modulated complex output.
+     *
+     * frequency_modulator_fc emits a constant unit phasor when input is 0.0f,
+     * which appears as an unwanted always-on carrier. This block suppresses
+     * that by outputting zeros whenever the FM queue source is idle.
+     */
+    class FMCarrierGate : public gr::sync_block {
+    public:
+        typedef std::shared_ptr<FMCarrierGate> sptr;
+
+        /**
+         * @brief Factory method to create a new FMCarrierGate instance.
+         * @param queue Shared pointer to the channel queue to check FM TX activity.
+         * @returns Shared pointer to the created FMCarrierGate instance.
+         */
+        static sptr make(std::shared_ptr<ChannelQueue> queue)
+        {
+            return gnuradio::get_initial_sptr(new FMCarrierGate(std::move(queue)));
+        }
+
+        /**
+         * @brief Produces complex samples for the flowgraph by gating the input based on FM TX activity.
+         * If the channel queue indicates that FM TX samples were produced during the latest scheduler cycle,
+         * this block forwards the input samples (the FM-modulated signal). Otherwise, it outputs zeros to suppress 
+         * the carrier.
+         * @param noutput_items Number of samples to produce in the output buffer.
+         * @param input_items Vector of input buffers (FM-modulated complex samples).
+         * @param output_items Vector of output buffers.
+         * @returns Number of output samples produced.
+         */
+        int work(int noutput_items, gr_vector_const_void_star& input_items,
+            gr_vector_void_star& output_items) override
+        {
+            const auto* in = static_cast<const gr_complex*>(input_items[0]);
+            auto* out = static_cast<gr_complex*>(output_items[0]);
+
+            // check the channel queue's FM carrier activity flag to determine whether to pass through the 
+            // input or output zeros.
+            const bool carrierOn = m_queue->fmCarrierOn.load(std::memory_order_relaxed);
+            if (!carrierOn) {
+                for (int i = 0; i < noutput_items; ++i)
+                    out[i] = gr_complex(0.0f, 0.0f);
+            } else {
+                for (int i = 0; i < noutput_items; ++i)
+                    out[i] = in[i];
+            }
+
+            return noutput_items;
+        }
+
+    private:
+        /**
+         * @brief Initializes a new instance of the FMCarrierGate class.
+         * @param queue Shared pointer to the channel queue to check FM TX activity.
+         */
+        explicit FMCarrierGate(std::shared_ptr<ChannelQueue> queue) :
+            gr::sync_block("dvmbb_tx_fm_carrier_gate",
+                gr::io_signature::make(1, 1, sizeof(gr_complex)),
+                gr::io_signature::make(1, 1, sizeof(gr_complex))),
+            m_queue(std::move(queue))
+        {
+            /* stub */
+        }
+
+        std::shared_ptr<ChannelQueue> m_queue;
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -371,7 +423,11 @@ namespace {
 
 /**
  * @brief Implementation of the radio manager internals.
- * Encapsulates the internal state and logic for managing SDR devices, channels, and flowgraphs.
+ * Encapsulates the internal state and logic for managing SDR devices, channels, and flowgraphs. This structure
+ * is out of the norm for typical structuring of DVM projects, but we're following a GNUradio esque format here.
+ * We're also doing this to keep include complexity to a bare minimum, such taht the GNUradio dependancies only really
+ * need to be included in this .cpp file and not in the header, which is included by other parts of the codebase 
+ * that we want to keep decoupled from GNUradio.
  */
 struct RadioManager::RMInternals {
     /**
@@ -419,6 +475,11 @@ struct RadioManager::RMInternals {
         std::string txAntenna;
         double rxBandwidth = 0.0;
         double txBandwidth = 0.0;
+    #if defined(HAS_GNURADIO_ZEROMQ)
+        // Optional headless debug tap for exporting wideband RX IQ via ZeroMQ PUB.
+        std::string rxIqTapAddress;
+        std::string rxIqTapTopic;
+    #endif
         double rxCenter = 0.0;
         double txCenter = 0.0;
         uint32_t decimInterpRatio = 1U;
@@ -426,6 +487,9 @@ struct RadioManager::RMInternals {
         gr::top_block_sptr tb;
         osmosdr::source::sptr src;
         osmosdr::sink::sptr sink;
+    #if defined(HAS_GNURADIO_ZEROMQ)
+        gr::zeromq::pub_sink::sptr rxIqTap;
+    #endif
 
         gr::blocks::add_cc::sptr txSum;
         std::vector<float> channelTaps;
@@ -444,6 +508,13 @@ struct RadioManager::RMInternals {
 
     std::mutex lock;
     bool running = false;
+    std::string runtimeStatusPubAddress;
+    std::string runtimeStatusPubTopic;
+    uint64_t runtimeStatusLastPublishMs = 0U;
+#if defined(HAS_GNURADIO_ZEROMQ)
+    void* runtimeStatusPubCtx = nullptr;
+    void* runtimeStatusPubSock = nullptr;
+#endif
 
     std::vector<DeviceRuntime> devices;
     std::unordered_map<uint8_t, std::shared_ptr<ChannelQueue>> channels;
@@ -452,6 +523,210 @@ struct RadioManager::RMInternals {
     std::vector<int16_t> scratch;
     // Scratch buffer for IQ RX dequeue (interleaved int16_t I,Q pairs)
     std::vector<int16_t> scratchIQ;
+
+    bool debug;
+
+    /**
+     * @brief Builds a JSON string representing the current runtime status of the RadioManager, including device states 
+     *  and channel configurations.
+     * @returns JSON string with the current runtime status.
+     */
+    std::string buildRuntimeStatusJson() const
+    {
+        const uint64_t updatedMs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+
+        std::string payload;
+        payload.reserve(2048U);
+
+        /*
+        ** bryanb: we're hand crafting this JSON -- yea yea I should use the json.h library but because this
+        **  is basically just for debug and I want to avoid extra dependencies and complexity, I'm just going to 
+        **  build the string manually
+        */
+
+        payload += "{\n";
+        payload += "  \"running\": ";
+        payload += running ? "true" : "false";
+        payload += ",\n";
+        payload += "  \"updatedMs\": ";
+        payload += std::to_string(updatedMs);
+        payload += ",\n";
+        payload += "  \"devices\": [\n";
+
+        // iterate over devices and include their current center/sample-rate and active RX/TX modem counts. this is 
+        // used by tools/zmq_fft_view.py to keep the FFT display aligned with dynamic retunes and modem activity
+        for (size_t devIdx = 0; devIdx < devices.size(); ++devIdx) {
+            const auto& dev = devices[devIdx];
+            payload += "    {\n";
+            payload += "      \"index\": ";
+            payload += std::to_string(devIdx);
+            payload += ",\n";
+            payload += "      \"sampleRate\": ";
+            payload += std::to_string(dev.sampleRate);
+            payload += ",\n";
+            payload += "      \"rxCenter\": ";
+            payload += std::to_string(dev.rxCenter);
+            payload += ",\n";
+            payload += "      \"txCenter\": ";
+            payload += std::to_string(dev.txCenter);
+            payload += ",\n";
+            payload += "      \"rxActive\": ";
+            payload += !dev.rxModemIds.empty() ? "true" : "false";
+            payload += ",\n";
+            payload += "      \"txActive\": ";
+            payload += !dev.txModemIds.empty() ? "true" : "false";
+#if defined(HAS_GNURADIO_ZEROMQ)
+            payload += ",\n";
+            payload += "      \"rxIqTapAddress\": \"";
+            payload += jsonEscape(dev.rxIqTapAddress);
+            payload += "\",\n";
+            payload += "      \"rxIqTapTopic\": \"";
+            payload += jsonEscape(dev.rxIqTapTopic);
+            payload += "\"\n";
+#else
+            payload += "\n";
+#endif
+            payload += "    }";
+            if ((devIdx + 1U) < devices.size())
+                payload += ",";
+            payload += "\n";
+        }
+
+        payload += "  ]\n";
+        payload += "}\n";
+
+        return payload;
+    }
+
+#if defined(HAS_GNURADIO_ZEROMQ)
+    /**
+     * @brief Closes the ZeroMQ context and socket used for publishing runtime status updates.
+     */
+    void closeRuntimeStatusPublisher()
+    {
+        if (runtimeStatusPubSock != nullptr) {
+            ::zmq_close(runtimeStatusPubSock);
+            runtimeStatusPubSock = nullptr;
+        }
+        if (runtimeStatusPubCtx != nullptr) {
+            ::zmq_ctx_term(runtimeStatusPubCtx);
+            runtimeStatusPubCtx = nullptr;
+        }
+    }
+
+    /**
+     * @brief Ensures that the ZeroMQ publisher socket for runtime status updates is initialized and bound to the 
+     * configured address. If the socket is already initialized, this function does nothing. If the socket is not 
+     * initialized, it attempts to create a new ZeroMQ context and PUB socket, bind it to the configured address, and 
+     * logs the result. If any step fails, it cleans up resources and returns false.
+     * @returns true if the runtime status publisher is ready to use, false otherwise.
+     */
+    bool ensureRuntimeStatusPublisher()
+    {
+        if (runtimeStatusPubAddress.empty())
+            return false;
+
+        if (runtimeStatusPubSock != nullptr)
+            return true;
+
+        runtimeStatusPubCtx = ::zmq_ctx_new();
+        if (runtimeStatusPubCtx == nullptr) {
+            ::LogWarning(LOG_SDR, "Unable to create runtime status ZMQ context");
+            return false;
+        }
+
+        runtimeStatusPubSock = ::zmq_socket(runtimeStatusPubCtx, ZMQ_PUB);
+        if (runtimeStatusPubSock == nullptr) {
+            ::LogWarning(LOG_SDR, "Unable to create runtime status ZMQ PUB socket");
+            closeRuntimeStatusPublisher();
+            return false;
+        }
+
+        const int rc = ::zmq_bind(runtimeStatusPubSock, runtimeStatusPubAddress.c_str());
+        if (rc != 0) {
+            ::LogWarning(LOG_SDR, "Unable to bind runtime status ZMQ PUB socket to %s", runtimeStatusPubAddress.c_str());
+            closeRuntimeStatusPublisher();
+            return false;
+        }
+
+        ::LogInfoEx(LOG_SDR, "Radio runtime status ZMQ PUB: %s%s%s",
+            runtimeStatusPubAddress.c_str(),
+            runtimeStatusPubTopic.empty() ? "" : " topic=",
+            runtimeStatusPubTopic.empty() ? "" : runtimeStatusPubTopic.c_str());
+
+        return true;
+    }
+
+    /**
+     * @brief Publishes a runtime status update message with the given payload string to the configured ZeroMQ PUB socket. 
+     * If the publisher is not initialized, this function does nothing.
+     * @param payload The string payload to publish as the runtime status update message.
+     */
+    void publishRuntimeStatus(const std::string& payload)
+    {
+        if (!ensureRuntimeStatusPublisher())
+            return;
+
+        if (!runtimeStatusPubTopic.empty()) {
+            ::zmq_send(runtimeStatusPubSock, runtimeStatusPubTopic.data(), runtimeStatusPubTopic.size(), ZMQ_SNDMORE);
+        }
+
+        ::zmq_send(runtimeStatusPubSock, payload.data(), payload.size(), 0);
+    }
+#endif
+
+    /**
+     * @brief Builds and publishes a runtime status update message with the current state of the RadioManager. This 
+     * function is intended to be called periodically (e.g. every second) to provide up-to-date status information to 
+     * external monitoring tools via ZeroMQ. If the publisher is not configured or fails to initialize, this function 
+     * will simply return without publishing.
+     */
+    void publishRuntimeStatus()
+    {
+        if (!debug)
+            return;
+
+#if !defined(HAS_GNURADIO_ZEROMQ)
+        return;
+#else
+        const std::string payload = buildRuntimeStatusJson();
+        if (!runtimeStatusPubAddress.empty())
+            this->publishRuntimeStatus(payload);
+        runtimeStatusLastPublishMs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+#endif
+    }
+
+    /**
+     * @brief Helper function to publish a runtime status update if the configured interval has elapsed since the last 
+     * publish. This is intended to be called periodically (e.g. in the main loop) to ensure that status updates are 
+     * published at a regular cadence without needing to track timing externally. If the publisher is not configured 
+     * or fails to initialize, this function will simply return without publishing.
+     * @param intervalMs The minimum interval in milliseconds between status updates. If the last publish was less than 
+     * this interval ago, this function will return without publishing. Default is 1000 ms
+     */
+    void publishRuntimeStatusHeartbeat(uint64_t intervalMs = 1000U)
+    {
+        if (!debug)
+            return;
+
+#if !defined(HAS_GNURADIO_ZEROMQ)
+        (void)intervalMs;
+        return;
+#else
+        if (runtimeStatusPubAddress.empty())
+            return;
+
+        const uint64_t nowMs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+
+        if ((nowMs - runtimeStatusLastPublishMs) < intervalMs)
+            return;
+
+        publishRuntimeStatus();
+#endif
+    }
 
     /**
      * @brief Helper to check if the SDR driver string contains a specific driver name.
@@ -659,6 +934,8 @@ struct RadioManager::RMInternals {
 
             dev.tb->unlock();
         }
+
+        publishRuntimeStatus();
     }
 
     /**
@@ -695,6 +972,14 @@ struct RadioManager::RMInternals {
         yaml::Node sdrNode = conf["sdr"];
         yaml::Node devicesNode = sdrNode["devices"];
 
+        runtimeStatusPubAddress = sdrNode["runtimeStatusPubAddress"].as<std::string>("");
+        runtimeStatusPubTopic = sdrNode["runtimeStatusPubTopic"].as<std::string>("");
+    #if !defined(HAS_GNURADIO_ZEROMQ)
+        if (!runtimeStatusPubAddress.empty()) {
+            ::LogWarning(LOG_SDR, "runtimeStatusPubAddress configured, but this build has no gnuradio-zeromq support");
+        }
+    #endif
+
         devices.clear();
         channels.clear();
 
@@ -709,6 +994,10 @@ struct RadioManager::RMInternals {
             const double defaultPpm = defaults["freqCorrPpm"].as<double>(0.0);
             const std::string defaultRxAntenna = defaults["rxAntenna"].as<std::string>("");
             const std::string defaultTxAntenna = defaults["txAntenna"].as<std::string>("");
+#if defined(HAS_GNURADIO_ZEROMQ)
+            const std::string defaultRxIqTapAddress = defaults["rxIqTapAddress"].as<std::string>("");
+            const std::string defaultRxIqTapTopic = defaults["rxIqTapTopic"].as<std::string>("");
+#endif
 
             // parse device configurations and probe capabilities
             for (size_t i = 0; i < devicesNode.size(); ++i) {
@@ -737,6 +1026,14 @@ struct RadioManager::RMInternals {
                 d.txAntenna = dev["txAntenna"].as<std::string>(defaultTxAntenna);
                 d.rxBandwidth = dev["rxBandwidth"].as<double>(0.0);
                 d.txBandwidth = dev["txBandwidth"].as<double>(0.0);
+#if defined(HAS_GNURADIO_ZEROMQ)
+                d.rxIqTapAddress = dev["rxIqTapAddress"].as<std::string>(defaultRxIqTapAddress);
+                d.rxIqTapTopic = dev["rxIqTapTopic"].as<std::string>(defaultRxIqTapTopic);
+#else
+                if (!dev["rxIqTapAddress"].isNone()) {
+                    ::LogWarning(LOG_SDR, "SDR %zu defines rxIqTapAddress, but this build has no gnuradio-zeromq support", i);
+                }
+#endif
                 devices.push_back(d);
             }
         }
@@ -792,6 +1089,9 @@ struct RadioManager::RMInternals {
             d.tb.reset();
             d.src.reset();
             d.sink.reset();
+#if defined(HAS_GNURADIO_ZEROMQ)
+            d.rxIqTap.reset();
+#endif
             d.txSum.reset();
             d.channelGraphs.clear();
             d.rxModemIds.clear();
@@ -799,6 +1099,13 @@ struct RadioManager::RMInternals {
         }
 
         running = false;
+
+        if (debug) {
+            publishRuntimeStatus();
+#if defined(HAS_GNURADIO_ZEROMQ)
+            closeRuntimeStatusPublisher();
+#endif
+        }
     }
 
     /**
@@ -875,6 +1182,18 @@ struct RadioManager::RMInternals {
                     dev.src->set_antenna(dev.rxAntenna, 0U);
                 if (dev.rxBandwidth > 0.0)
                     dev.src->set_bandwidth(dev.rxBandwidth, 0U);
+
+#if defined(HAS_GNURADIO_ZEROMQ)
+                if (!dev.rxIqTapAddress.empty() && debug) {
+                    dev.rxIqTap = gr::zeromq::pub_sink::make(sizeof(gr_complex), 1U,
+                        const_cast<char*>(dev.rxIqTapAddress.c_str()), 100, false, -1, dev.rxIqTapTopic, true);
+                    dev.tb->connect(dev.src, 0, dev.rxIqTap, 0);
+
+                    const std::string endpoint = dev.rxIqTap->last_endpoint();
+                    ::LogInfoEx(LOG_SDR, "SDR %zu RX IQ tap enabled (%s)%s%s", devIdx, endpoint.empty() ? dev.rxIqTapAddress.c_str() : endpoint.c_str(),
+                        dev.rxIqTapTopic.empty() ? "" : " topic=", dev.rxIqTapTopic.empty() ? "" : dev.rxIqTapTopic.c_str());
+                }
+#endif
             } else {
                 dev.src.reset();
             }
@@ -982,6 +1301,8 @@ struct RadioManager::RMInternals {
 
         running = true;
         ::LogInfoEx(LOG_SDR, "Radio runtime started (%zu SDR device(s))", devices.size());
+        
+        publishRuntimeStatus();
     }
 };
 
@@ -1085,6 +1406,7 @@ int RadioManager::dequeueRx(uint8_t modemId, uint8_t*& samples)
     samples = nullptr;
 
     std::lock_guard<std::mutex> guard(m_internal->lock);
+    m_internal->publishRuntimeStatusHeartbeat();
 
     auto it = m_internal->channels.find(modemId);
     if (it == m_internal->channels.end())
@@ -1143,6 +1465,7 @@ int RadioManager::dequeueIQRx(uint8_t modemId, uint8_t*& samples)
     samples = nullptr;
 
     std::lock_guard<std::mutex> guard(m_internal->lock);
+    m_internal->publishRuntimeStatusHeartbeat();
 
     auto it = m_internal->channels.find(modemId);
     if (it == m_internal->channels.end())
@@ -1196,6 +1519,15 @@ bool RadioManager::hasPendingTx(uint8_t modemId)
     return !ch->tx.empty() || !ch->txIQ.empty();
 }
 
+/* Enables or disables debug logging for the RadioManager. */
+
+void RadioManager::setDebug(bool enabled)
+{
+    std::lock_guard<std::mutex> guard(m_internal->lock);
+    m_internal->debug = enabled;
+    m_debug = enabled;
+}
+
 // ---------------------------------------------------------------------------
 //  Private Class Members
 // ---------------------------------------------------------------------------
@@ -1203,7 +1535,8 @@ bool RadioManager::hasPendingTx(uint8_t modemId)
 /* Initializes a new instance of the RadioManager class. */
 
 RadioManager::RadioManager() :
-    m_internal(new RMInternals())
+    m_internal(new RMInternals()),
+    m_debug(false)
 {
     /* stub */
 }
