@@ -444,7 +444,7 @@ struct RadioManager::RMInternals {
      */
     static uint32_t parseRxDeviceIndex(yaml::Node modemNode)
     {
-        yaml::Node rfNode = modemNode["rf"];
+        yaml::Node rfNode = modemNode["radio"];
         const uint32_t fallback = rfNode["device"].as<uint32_t>(0U);
         return rfNode["rxDevice"].as<uint32_t>(fallback);
     }
@@ -456,7 +456,7 @@ struct RadioManager::RMInternals {
      */
     static uint32_t parseTxDeviceIndex(yaml::Node modemNode)
     {
-        yaml::Node rfNode = modemNode["rf"];
+        yaml::Node rfNode = modemNode["radio"];
         const uint32_t fallback = rfNode["device"].as<uint32_t>(0U);
         return rfNode["txDevice"].as<uint32_t>(fallback);
     }
@@ -708,7 +708,7 @@ struct RadioManager::RMInternals {
             }
 
             // parse modulation mode for this modem channel
-            std::string modeStr = modemList[i]["rf"]["modulationMode"].as<std::string>("FM_C4FM");
+            std::string modeStr = modemList[i]["radio"]["modulationMode"].as<std::string>("FM_C4FM");
             if (modeStr == "IQ_CQPSK")
                 channel->mode = radio::ModulationMode::IQ_CQPSK;
             else
@@ -922,7 +922,7 @@ struct RadioManager::RMInternals {
         }
 
         running = true;
-        ::LogInfoEx(LOG_SDR, "RF runtime started (%zu SDR device(s))", devices.size());
+        ::LogInfoEx(LOG_SDR, "Radio runtime started (%zu SDR device(s))", devices.size());
     }
 };
 
@@ -938,14 +938,14 @@ RadioManager& RadioManager::instance()
     return s_instance;
 }
 
-/* Initializes the RF runtime and starts SDR flowgraphs. */
+/* Initializes the SDR runtime and starts SDR flowgraphs. */
 
 bool RadioManager::initialize(yaml::Node& conf)
 {
     std::lock_guard<std::mutex> guard(m_internal->lock);
 
     if (!m_internal->configure(conf)) {
-        ::LogError(LOG_SDR, "RF runtime configuration failed");
+        ::LogError(LOG_SDR, "Radio runtime configuration failed");
         return false;
     }
 

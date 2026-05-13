@@ -116,7 +116,11 @@ modems:
       verbose: true
       # Flag indicating whether or not debug logging is enabled.
       debug: false
-      rf:
+
+      #
+      # SDR Radio
+      #
+      radio:
         # Single-device assignment (applies to both RX and TX if rxDevice/txDevice are not set).
         device: 0
         # Optional explicit split assignment. Useful when RX SDR is receive-only (for example RTL-SDR).
@@ -138,7 +142,11 @@ modems:
       verbose: true
       # Flag indicating whether or not debug logging is enabled.
       debug: false
-      rf:
+
+      #
+      # SDR Radio
+      #
+      radio:
         # Single-device assignment (applies to both RX and TX if rxDevice/txDevice are not set).
         device: 0
         # Optional explicit split assignment. Useful when RX SDR is receive-only (for example RTL-SDR).
