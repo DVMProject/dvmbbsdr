@@ -159,8 +159,6 @@ modems:
         #   FM_C4FM  - FM + 4FSK baseband (DMR, P25 Phase 1, NXDN). Default.
         #   IQ_CQPSK - Direct I/Q complex path (P25 Phase 2 CQPSK). Requires TX-capable SDR.
         modulationMode: FM_C4FM
-        # Optional static channel metadata (for planning/observability).
-        name: "channel-a"
     - protocol:
         # UART/RS232 serial port device.
         port: /tmp/dvm1
@@ -181,8 +179,6 @@ modems:
         #   FM_C4FM  - FM + 4FSK baseband (DMR, P25 Phase 1, NXDN). Default.
         #   IQ_CQPSK - Direct I/Q complex path (P25 Phase 2 CQPSK). Requires TX-capable SDR.
         modulationMode: FM_C4FM
-        # Optional static channel metadata (for planning/observability).
-        name: "channel-b"
 
 #
 # System Configuration
