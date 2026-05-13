@@ -310,9 +310,10 @@ namespace {
 }
 
 /**
- * @brief Implementation of the RadioManager class.
+ * @brief Implementation of the radio manager internals.
+ * Encapsulates the internal state and logic for managing SDR devices, channels, and flowgraphs.
  */
-struct RadioManager::Impl {
+struct RadioManager::RMInternals {
     /**
      * @brief Internal structure to hold runtime state for each SDR device.
      */
@@ -937,14 +938,14 @@ RadioManager& RadioManager::instance()
 
 bool RadioManager::initialize(yaml::Node& conf)
 {
-    std::lock_guard<std::mutex> guard(m_impl->lock);
+    std::lock_guard<std::mutex> guard(m_internal->lock);
 
-    if (!m_impl->configure(conf)) {
+    if (!m_internal->configure(conf)) {
         ::LogError(LOG_SDR, "RF runtime configuration failed");
         return false;
     }
 
-    m_impl->buildGraphs();
+    m_internal->buildGraphs();
     return true;
 }
 
@@ -952,18 +953,18 @@ bool RadioManager::initialize(yaml::Node& conf)
 
 void RadioManager::shutdown()
 {
-    std::lock_guard<std::mutex> guard(m_impl->lock);
-    m_impl->stopGraphs();
+    std::lock_guard<std::mutex> guard(m_internal->lock);
+    m_internal->stopGraphs();
 }
 
 /* Updates modem RF channel settings. */
 
 void RadioManager::setChannelRF(uint8_t modemId, uint32_t rxFreq, uint32_t txFreq, uint8_t rfPower)
 {
-    std::lock_guard<std::mutex> guard(m_impl->lock);
+    std::lock_guard<std::mutex> guard(m_internal->lock);
 
-    auto it = m_impl->channels.find(modemId);
-    if (it == m_impl->channels.end())
+    auto it = m_internal->channels.find(modemId);
+    if (it == m_internal->channels.end())
         return;
 
     auto& ch = it->second;
@@ -974,18 +975,18 @@ void RadioManager::setChannelRF(uint8_t modemId, uint32_t rxFreq, uint32_t txFre
         ch->rfPower = rfPower;
     }
 
-    std::vector<Impl::DeviceTopology> topology;
-    if (!m_impl->collectTopology(topology)) {
+    std::vector<RMInternals::DeviceTopology> topology;
+    if (!m_internal->collectTopology(topology)) {
         ::LogError(LOG_SDR, "Invalid SDR topology: modem mapped to out-of-range device");
         return;
     }
 
-    if (!m_impl->running || m_impl->topologyChanged(topology)) {
-        m_impl->buildGraphs();
+    if (!m_internal->running || m_internal->topologyChanged(topology)) {
+        m_internal->buildGraphs();
         return;
     }
 
-    m_impl->applyHotRetune();
+    m_internal->applyHotRetune();
 }
 
 /* Queues modem-domain TX samples for SDR transmission. */
@@ -995,10 +996,10 @@ void RadioManager::enqueueTx(uint8_t modemId, const uint8_t* samples, size_t len
     if (samples == nullptr || length < sizeof(int16_t))
         return;
 
-    std::lock_guard<std::mutex> guard(m_impl->lock);
+    std::lock_guard<std::mutex> guard(m_internal->lock);
 
-    auto it = m_impl->channels.find(modemId);
-    if (it == m_impl->channels.end())
+    auto it = m_internal->channels.find(modemId);
+    if (it == m_internal->channels.end())
         return;
 
     auto& ch = it->second;
@@ -1020,10 +1021,10 @@ int RadioManager::dequeueRx(uint8_t modemId, uint8_t*& samples)
 {
     samples = nullptr;
 
-    std::lock_guard<std::mutex> guard(m_impl->lock);
+    std::lock_guard<std::mutex> guard(m_internal->lock);
 
-    auto it = m_impl->channels.find(modemId);
-    if (it == m_impl->channels.end())
+    auto it = m_internal->channels.find(modemId);
+    if (it == m_internal->channels.end())
         return 0;
 
     auto& ch = it->second;
@@ -1034,13 +1035,13 @@ int RadioManager::dequeueRx(uint8_t modemId, uint8_t*& samples)
 
     // copy samples to scratch buffer and pop from queue
     const size_t n = std::min(ch->rx.size(), kRxBurstSamples);
-    m_impl->scratch.resize(n);
+    m_internal->scratch.resize(n);
     for (size_t i = 0; i < n; ++i) {
-        m_impl->scratch[i] = ch->rx.front();
+        m_internal->scratch[i] = ch->rx.front();
         ch->rx.pop_front();
     }
 
-    samples = reinterpret_cast<uint8_t*>(m_impl->scratch.data());
+    samples = reinterpret_cast<uint8_t*>(m_internal->scratch.data());
     return static_cast<int>(n * sizeof(int16_t));
 }
 
@@ -1051,10 +1052,10 @@ void RadioManager::enqueueIQTx(uint8_t modemId, const uint8_t* samples, size_t l
     if (samples == nullptr || length < (2 * sizeof(int16_t)))
         return;
 
-    std::lock_guard<std::mutex> guard(m_impl->lock);
+    std::lock_guard<std::mutex> guard(m_internal->lock);
 
-    auto it = m_impl->channels.find(modemId);
-    if (it == m_impl->channels.end())
+    auto it = m_internal->channels.find(modemId);
+    if (it == m_internal->channels.end())
         return;
 
     auto& ch = it->second;
@@ -1078,10 +1079,10 @@ int RadioManager::dequeueIQRx(uint8_t modemId, uint8_t*& samples)
 {
     samples = nullptr;
 
-    std::lock_guard<std::mutex> guard(m_impl->lock);
+    std::lock_guard<std::mutex> guard(m_internal->lock);
 
-    auto it = m_impl->channels.find(modemId);
-    if (it == m_impl->channels.end())
+    auto it = m_internal->channels.find(modemId);
+    if (it == m_internal->channels.end())
         return 0;
 
     auto& ch = it->second;
@@ -1092,15 +1093,15 @@ int RadioManager::dequeueIQRx(uint8_t modemId, uint8_t*& samples)
 
     // convert gr_complex back to interleaved int16_t I,Q pairs
     const size_t n = std::min(ch->rxIQ.size(), kRxBurstSamples);
-    m_impl->scratchIQ.resize(n * 2);
+    m_internal->scratchIQ.resize(n * 2);
     for (size_t i = 0; i < n; ++i) {
         const gr_complex s = ch->rxIQ.front();
         ch->rxIQ.pop_front();
-        m_impl->scratchIQ[2 * i]     = static_cast<int16_t>(std::max(-32767.0f, std::min(32767.0f, s.real() * 32767.0f)));
-        m_impl->scratchIQ[2 * i + 1] = static_cast<int16_t>(std::max(-32767.0f, std::min(32767.0f, s.imag() * 32767.0f)));
+        m_internal->scratchIQ[2 * i]     = static_cast<int16_t>(std::max(-32767.0f, std::min(32767.0f, s.real() * 32767.0f)));
+        m_internal->scratchIQ[2 * i + 1] = static_cast<int16_t>(std::max(-32767.0f, std::min(32767.0f, s.imag() * 32767.0f)));
     }
 
-    samples = reinterpret_cast<uint8_t*>(m_impl->scratchIQ.data());
+    samples = reinterpret_cast<uint8_t*>(m_internal->scratchIQ.data());
     return static_cast<int>(n * 2 * sizeof(int16_t));
 }
 
@@ -1108,10 +1109,10 @@ int RadioManager::dequeueIQRx(uint8_t modemId, uint8_t*& samples)
 
 radio::ModulationMode RadioManager::getChannelMode(uint8_t modemId)
 {
-    std::lock_guard<std::mutex> guard(m_impl->lock);
+    std::lock_guard<std::mutex> guard(m_internal->lock);
 
-    auto it = m_impl->channels.find(modemId);
-    if (it == m_impl->channels.end())
+    auto it = m_internal->channels.find(modemId);
+    if (it == m_internal->channels.end())
         return radio::ModulationMode::FM_C4FM;
 
     return it->second->mode;
@@ -1124,7 +1125,7 @@ radio::ModulationMode RadioManager::getChannelMode(uint8_t modemId)
 /* Initializes a new instance of the RadioManager class. */
 
 RadioManager::RadioManager() :
-    m_impl(new Impl())
+    m_internal(new RMInternals())
 {
     /* stub */
 }
@@ -1134,6 +1135,6 @@ RadioManager::RadioManager() :
 RadioManager::~RadioManager()
 {
     shutdown();
-    delete m_impl;
-    m_impl = nullptr;
+    delete m_internal;
+    m_internal = nullptr;
 }

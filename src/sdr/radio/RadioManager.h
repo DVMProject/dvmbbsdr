@@ -148,8 +148,8 @@ namespace radio
         RadioManager(const RadioManager&) = delete;
         RadioManager& operator=(const RadioManager&) = delete;
 
-        struct Impl;
-        Impl* m_impl;
+        struct RMInternals;
+        RMInternals* m_internal;
     };
 }
 
