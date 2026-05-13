@@ -309,6 +309,10 @@ namespace {
     };
 }
 
+// ---------------------------------------------------------------------------
+//  Structure Definition
+// ---------------------------------------------------------------------------
+
 /**
  * @brief Implementation of the radio manager internals.
  * Encapsulates the internal state and logic for managing SDR devices, channels, and flowgraphs.
