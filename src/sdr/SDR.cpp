@@ -129,13 +129,13 @@ int SDR::run()
     if (!ret)
         return EXIT_FAILURE;
 
-    ret = radio::RadioManager::instance().initialize(m_conf);
+    ret = ::radio::RadioManager::instance().initialize(m_conf);
     if (!ret) {
         ::LogError(LOG_HOST, "Failed to initialize SDR RF runtime");
         return EXIT_FAILURE;
     }
 
-    radio::RadioManager::instance().setDebug(m_debug);
+    ::radio::RadioManager::instance().setDebug(m_debug);
 
     // initialize modems
     ret = createModems();
@@ -176,7 +176,7 @@ int SDR::run()
         }
     }
 
-    radio::RadioManager::instance().shutdown();
+    ::radio::RadioManager::instance().shutdown();
 
     return EXIT_SUCCESS;
 }
@@ -217,7 +217,7 @@ bool SDR::readParams()
     std::string rxIqTapTopic = sdrDefaults["rxIqTapTopic"].as<std::string>("");
 #else
     if (!sdrDefaults["rxIqTapAddress"].isNone()) {
-        ::LogWarning(LOG_SDR, "SDR %zu defines rxIqTapAddress, but this build has no gnuradio-zeromq support", i);
+        ::LogWarning(LOG_SDR, "SDR defaults define rxIqTapAddress, but this build has no gnuradio-zeromq support");
     }
 #endif
 

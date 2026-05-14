@@ -231,40 +231,27 @@ void* Modem::threadClock(void* arg)
 
 void Modem::setRFChannel(uint32_t rxFreq, uint32_t txFreq, uint8_t rfPower, bool rxInvert, bool txInvert)
 {
-    /*
-    ** TODO TODO TODO -- this should set the RF channel parameters for the SDR path for this modem, which will be used 
-    ** to configure the modulation and other parameters for the various modulation modes
-    */
+    radio::RadioManager::instance().setChannelPolarity(m_modemId, rxInvert, txInvert);
+    radio::RadioManager::instance().setChannelParams(m_modemId, rxFreq, txFreq, rfPower);
 }
 
 /* Helper to set the modem TX activity state. */
 
 void Modem::setModemTxActive(bool active)
 {
-    /*
-    ** TODO TODO TODO -- this should toggle the Tx state for the SDR path for this modem, which will be used to gate 
-    ** modulation when the modem is active vs idle
-    */
+    radio::RadioManager::instance().setChannelTxActive(m_modemId, active);
 }
 
 /* Read samples queued for reception. */
 
-int Modem::readFMSamples(uint8_t* samples)
+int Modem::readFMSamples(uint8_t*& samples)
 {
-    /*
-    ** TODO TODO TODO -- this should pull demodulated FM samples from some queue for passing to 
-    **  the higher level Rx functions
-    */
-
-    return 0;
+    return radio::RadioManager::instance().popChannelRxSamples(m_modemId, samples);
 }
 
 /* Helper to handle FM modulated samples. */
 
 void Modem::transmitFMSamples(const uint8_t* samples, size_t length)
 {
-    /*
-    ** TODO TODO TODO -- this is fed samples from the higher level Tx functions
-    **  to be transmitted as modulated FM
-    */
+    radio::RadioManager::instance().pushChannelTxSamples(m_modemId, samples, length);
 }

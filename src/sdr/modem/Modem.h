@@ -238,7 +238,7 @@ namespace modem
          * @param samples Buffer to store the received samples.
          * @return int Number of samples read.
          */
-        int readFMSamples(uint8_t* samples);
+        int readFMSamples(uint8_t*& samples);
         /**
          * @brief Helper to handle transmitting FM modulated samples.
          * @param samples Buffer containing samples.

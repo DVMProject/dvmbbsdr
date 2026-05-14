@@ -25,20 +25,6 @@
 using namespace modem;
 
 // ---------------------------------------------------------------------------
-//  Global Functions
-// ---------------------------------------------------------------------------
-
-/**
- * @brief Helper to get current monotonic time in milliseconds.
- * @returns Current monotonic time in milliseconds.
- */
-uint64_t monotonicMs()
-{
-    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count());
-}
-
-// ---------------------------------------------------------------------------
 //  Constants
 // ---------------------------------------------------------------------------
 
@@ -88,6 +74,20 @@ const uint16_t NXDN_ISINC_FILTER_LEN = 32U;
 // Generated using [b, a] = butter(1, 0.001) in MATLAB
 static q31_t DC_FILTER[] = { 3367972, 0, 3367972, 0, 2140747704, 0 }; // {b0, 0, b1, b2, -a1, -a2}
 const uint32_t DC_FILTER_STAGES = 1U; // One Biquad stage
+
+// ---------------------------------------------------------------------------
+//  Global Functions
+// ---------------------------------------------------------------------------
+
+/**
+ * @brief Helper to get current monotonic time in milliseconds.
+ * @returns Current monotonic time in milliseconds.
+ */
+uint64_t monotonicMs()
+{
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
 
 // ---------------------------------------------------------------------------
 //  Public Class Members
@@ -946,11 +946,13 @@ void IO::interruptRx()
     // FM mode: receive FM-demodulated real audio samples from the SDR path.
     uint8_t* samples = nullptr;
     int size = m_modem->readFMSamples(samples);
-    if (size < 1) {
+    if (size < 1 || samples == nullptr) {
         if (m_debug)
             noteRxRfIdle();
         return;
     }
+
+    const uint8_t* sampleBytes = samples;
 
     if (m_debug)
         noteRxRfActivity(static_cast<uint32_t>(size), false);
@@ -959,7 +961,7 @@ void IO::interruptRx()
 
     for (int i = 0; i < size; i += 2) {
         int16_t sample = 0;
-        ::memcpy(&sample, (uint8_t*)samples + i, sizeof(short));
+        ::memcpy(&sample, sampleBytes + i, sizeof(short));
 
         m_rxBuffer.put(sample, control);
         m_rssiBuffer.put(3U);
