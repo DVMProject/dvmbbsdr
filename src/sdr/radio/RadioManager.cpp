@@ -57,7 +57,7 @@ using namespace radio;
 
 #define NBFM_BANDWIDTH_HZ 12500.0
 #define NBFM_DEVIATION_HZ 2500.0
-#define LOW_PASS_HZ 2880.0
+#define C4FM_DEVIATION_HZ 2880.0
 
 // ---------------------------------------------------------------------------
 //  Global Functions
@@ -893,8 +893,8 @@ void RadioManager::startRadios()
             const unsigned decim = std::max(1U, asUnsignedRate(dev.sampleRate / CHANNELIZER_TARGET_RATE, 1U));
             const double chanRate = dev.sampleRate / static_cast<double>(decim);
 
-            const std::vector<float> xlateTaps = gr::filter::firdes::low_pass(1.0, dev.sampleRate, LOW_PASS_HZ,
-                LOW_PASS_HZ * 0.1, gr::fft::window::WIN_HAMMING);
+            const std::vector<float> xlateTaps = gr::filter::firdes::low_pass(1.0, dev.sampleRate, NBFM_BANDWIDTH_HZ,
+                C4FM_DEVIATION_HZ, gr::fft::window::WIN_HAMMING);
 
             // for each assigned RX channel, create a chain of blocks to translate, demodulate, resample, and sink the 
             // samples to the modem processing queue
@@ -909,7 +909,7 @@ void RadioManager::startRadios()
                 auto xlate = gr::filter::freq_xlating_fir_filter_ccf::make(static_cast<int>(decim), xlateTaps,
                     offsetHz, dev.sampleRate);
 
-                const float demodGain = static_cast<float>(chanRate / (2.0 * M_PI * NBFM_DEVIATION_HZ));
+                const float demodGain = static_cast<float>(chanRate / (2.0 * M_PI * C4FM_DEVIATION_HZ));
                 auto demod = gr::analog::quadrature_demod_cf::make(demodGain);
 
                 const unsigned chanRateInt = asUnsignedRate(chanRate, 96000U);
@@ -918,7 +918,8 @@ void RadioManager::startRadios()
                 const unsigned dec = chanRateInt / g;
                 auto resamp = gr::filter::rational_resampler_fff::make(interp, dec);
 
-                auto f2s = gr::blocks::float_to_short::make(1U, 32767.0f);
+                // Modem expects samples in range ±4096, not full ±32767.
+                auto f2s = gr::blocks::float_to_short::make(1U, 4096.0f);
                 auto rxSink = ModemRxSink::make(this, modemId);
 
                 runtime.tb->connect(runtime.source, 0, xlate, 0);
@@ -964,9 +965,12 @@ void RadioManager::startRadios()
                 const double offsetHz = static_cast<double>(ch.txFreq) - static_cast<double>(dev.txCenter);
 
                 auto txSrc = ModemTxSource::make(this, modemId);
-                auto s2f = gr::blocks::short_to_float::make(1U, 32768.0f);
-                //auto fmMod = gr::analog::frequency_modulator_fc::make(static_cast<float>(safePhaseInc(NBFM_DEVIATION_HZ, MODEM_SAMPLE_RATE)));
-                auto fmMod = gr::analog::frequency_modulator_fc::make(static_cast<float>(safePhaseInc(NBFM_BANDWIDTH_HZ, MODEM_SAMPLE_RATE) * 1.5f));
+                // Modem samples are q15_t values in range ±4096, not full ±32768.
+                // Scale by 4096 to normalize to ±1.0 range for FM modulation.
+                auto s2f = gr::blocks::short_to_float::make(1U, 4096.0f);
+                // FM modulator sensitivity: 2π × deviation / sample_rate.
+                // P25 C4FM uses ±2.88 kHz deviation per specification.
+                auto fmMod = gr::analog::frequency_modulator_fc::make(static_cast<float>(safePhaseInc(C4FM_DEVIATION_HZ, MODEM_SAMPLE_RATE)));
 
                 const unsigned deviceRateInt = asUnsignedRate(dev.sampleRate, 960000U);
                 const unsigned modemRateInt = static_cast<unsigned>(MODEM_SAMPLE_RATE);

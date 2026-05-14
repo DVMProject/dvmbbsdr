@@ -287,17 +287,16 @@ void IO::process()
         uint16_t rssi[RX_BLOCK_SIZE];
 
         for (uint16_t i = 0U; i < RX_BLOCK_SIZE; i++) {
-            int16_t sample = 0;
+            q15_t sample = 0;
             m_rxBuffer.get(sample, control[i]);
             m_rssiBuffer.get(rssi[i]);
 
             // Detect ADC overflow.
-            if (m_detect && (sample == 32767 || sample == -32768))
+            if (m_detect && (sample == 0U || sample == 4095U))
                 m_adcOverflow++;
 
-            q15_t res1 = q15_t(sample);
-            q31_t res2 = res1 * m_rxLevel;
-            samples[i] = q15_t(__SSAT((res2 >> 15), 16));
+            q31_t res1 = sample * m_rxLevel;
+            samples[i] = q15_t(__SSAT((res1 >> 15), 16));
         }
 
         if (m_lockout)
@@ -481,16 +480,15 @@ void IO::write(DVM_STATE mode, q15_t* samples, uint16_t length, const uint8_t* c
     for (uint16_t i = 0U; i < length; i++) {
         q31_t res1 = samples[i] * txLevel;
         q15_t res2 = q15_t(__SSAT((res1 >> 15), 16));
-        int16_t res3 = static_cast<int16_t>(res2);
 
         // Detect DAC overflow.
-        if (res3 == 32767 || res3 == -32768)
+        if (res2 >= 4095 || res2 <= -4095)
             m_dacOverflow++;
 
         if (control == NULL)
-            m_txBuffer.put(res3, MARK_NONE);
+            m_txBuffer.put(res2, MARK_NONE);
         else
-            m_txBuffer.put(res3, control[i]);
+            m_txBuffer.put(res2, control[i]);
     }
     ::pthread_mutex_unlock(&m_txLock);
 
