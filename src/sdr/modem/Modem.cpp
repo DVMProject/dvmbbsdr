@@ -244,14 +244,14 @@ void Modem::setModemTxActive(bool active)
 
 /* Read samples queued for reception. */
 
-int Modem::readFMSamples(uint8_t*& samples)
+int Modem::readRFSamples(int16_t*& samples, uint8_t*& control, uint16_t*& rssi)
 {
-    return radio::RadioManager::instance().popChannelRxSamples(m_modemId, samples);
+    return radio::RadioManager::instance().popChannelRxSamples(m_modemId, samples, control, rssi);
 }
 
-/* Helper to handle FM modulated samples. */
+/* Queue RF samples for IQ modulation/transmit. */
 
-void Modem::transmitFMSamples(const uint8_t* samples, size_t length)
+void Modem::transmitRFSamples(const int16_t* samples, const uint8_t* control, size_t sampleCount)
 {
-    radio::RadioManager::instance().pushChannelTxSamples(m_modemId, samples, length);
+    radio::RadioManager::instance().pushChannelTxSamples(m_modemId, samples, control, sampleCount);
 }

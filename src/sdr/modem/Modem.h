@@ -234,17 +234,20 @@ namespace modem
         void setModemTxActive(bool active);
 
         /**
-         * @brief Read samples queued for reception.
-         * @param samples Buffer to store the received samples.
+         * @brief Read RF-demodulated samples queued for reception.
+         * @param samples Pointer to received sample array.
+         * @param control Pointer to aligned per-sample control marks.
+         * @param rssi Pointer to received per-sample RSSI values.
          * @return int Number of samples read.
          */
-        int readFMSamples(uint8_t*& samples);
+        int readRFSamples(int16_t*& samples, uint8_t*& control, uint16_t*& rssi);
         /**
-         * @brief Helper to handle transmitting FM modulated samples.
+         * @brief Queue RF input samples for IQ modulation/transmit shim.
          * @param samples Buffer containing samples.
-         * @param length Length of buffer.
+         * @param control Buffer containing per-sample control marks.
+         * @param sampleCount Number of samples in buffers.
          */
-        void transmitFMSamples(const uint8_t* samples, size_t length);
+        void transmitRFSamples(const int16_t* samples, const uint8_t* control, size_t sampleCount);
     };
 } // namespace modem
 

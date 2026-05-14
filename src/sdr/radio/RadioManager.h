@@ -26,6 +26,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <complex>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -36,16 +37,6 @@
 
 namespace radio
 {
-    /**
-     * @brief Enumeration of modulation modes supported by the SDR channels. This enum is used to specify the modulation
-     * type for each channel, which determines how the samples are processed and transmitted by the GNU Radio flowgraph. 
-     * The supported modulation modes include FM_C4FM for frequency modulation and IQ_CQPSK for complex IQ modulation.
-     */
-    enum class ModulationMode {
-        FM_C4FM,
-        IQ_CQPSK
-    };
-
     /**
      * @brief Implements the RadioManager class, which manages SDR devices and channels, including their configuration,
      * runtime state, and interaction with GNU Radio flowgraphs. The RadioManager provides methods for initializing and
@@ -87,7 +78,7 @@ namespace radio
 
         /**
          * @brief Helper to set the RF channel polarity for a specific modem channel. This method allows for dynamic reconfiguration
-         * of the channel's RX and TX polarity, which can be necessary for certain modulation schemes or hardware requirements. 
+         * of the channel's RX and TX polarity for RF path integration with different hardware chains.
          * The changes will take effect immediately in the GNU Radio flowgraph.
          * @param modemId Modem ID of the channel to configure.
          * @param rxInvert True to invert the RX polarity, false for normal polarity.
@@ -115,44 +106,38 @@ namespace radio
         void setChannelTxActive(uint8_t modemId, bool active);
 
         /**
-         * @brief Helper to push samples to a channel's TX queue. This method is used by modem instances to queue 
-         * samples for transmission on a specific channel. The samples will be sent to the SDR hardware when the channel 
-         * is active for transmission.
+         * @brief Helper to push TX samples and their control flags to a channel queue.
          * @param modemId Modem ID of the channel to which the samples should be pushed.
-         * @param samples Buffer containing the samples to push.
-         * @param length Length of the samples buffer.
+         * @param samples Buffer containing signed 16-bit discriminator/baseband samples.
+         * @param control Optional per-sample control marks. If null, MARK_NONE is assumed.
+         * @param sampleCount Number of samples in the input buffers.
          */
-        void pushChannelTxSamples(uint8_t modemId, const uint8_t* samples, size_t length);
+        void pushChannelTxSamples(uint8_t modemId, const int16_t* samples, const uint8_t* control, size_t sampleCount);
         /**
-         * @brief Helper to pop samples from a channel's RX queue. This method is used by modem instances to retrieve received
-         * samples from a specific channel. The samples are removed from the channel's RX queue and returned to the caller for processing.
+         * @brief Helper to pop RX samples from a channel queue.
          * @param modemId Modem ID of the channel from which to pop samples.
-         * @param samples Reference to a pointer that will be set to the buffer containing the popped samples.
-         * @returns int Number of samples popped and stored in the provided buffer, or -1 if an error occurred (e.g., channel 
-         * not found or no samples available in the queue).
+         * @param samples Pointer to popped sample vector scratch memory.
+         * @param control Pointer to popped control vector scratch memory.
+         * @param rssi Pointer to popped RSSI vector scratch memory.
+         * @returns int Number of samples popped.
          */
-        int popChannelRxSamples(uint8_t modemId, uint8_t*& samples);
+        int popChannelRxSamples(uint8_t modemId, int16_t*& samples, uint8_t*& control, uint16_t*& rssi);
 
         /**
-         * @brief Helper to dequeue samples from a channel's TX queue. This method is used internally by the GNU Radio flowgraph
-         * to retrieve samples that have been queued for transmission by modem instances. The samples are removed from the 
-         * channel's TX queue and returned to the caller for sending to the SDR hardware.
+         * @brief Helper to dequeue IQ samples from a channel's TX queue for GNU Radio.
          * @param modemId Modem ID of the channel from which to dequeue samples.
-         * @param dst Buffer to store the dequeued samples.
+         * @param dst Buffer to store dequeued complex IQ samples.
          * @param sampleCount Maximum number of samples to dequeue.
-         * @returns size_t Number of samples dequeued and stored in the provided buffer, or 0 if no samples were available 
-         * in the queue.
+         * @returns size_t Number of IQ samples dequeued.
          */
-        size_t dequeueChannelTxSamples(uint8_t modemId, int16_t* dst, size_t sampleCount);
+        size_t dequeueChannelTxIqSamples(uint8_t modemId, std::complex<float>* dst, size_t sampleCount);
         /**
-         * @brief Helper to enqueue samples to a channel's RX queue. This method is used internally by the GNU Radio flowgraph
-         * to store received samples from the SDR hardware into the appropriate channel's RX queue for processing by modem 
-         * instances. The samples are added to the channel's RX queue and will be available for retrieval by modem instances.
+         * @brief Helper to enqueue IQ samples from GNU Radio RX into a channel's shim.
          * @param modemId Modem ID of the channel to which the samples should be enqueued.
-         * @param src Buffer containing the samples to enqueue.
+         * @param src Buffer containing complex IQ samples to enqueue.
          * @param sampleCount Number of samples in the buffer to enqueue.
          */
-        void enqueueChannelRxSamples(uint8_t modemId, const int16_t* src, size_t sampleCount);
+        void enqueueChannelRxIqSamples(uint8_t modemId, const std::complex<float>* src, size_t sampleCount);
 
         /**
          * @brief Helper to check if a channel is active for transmission. This method allows modem instances to query the 
@@ -190,7 +175,7 @@ namespace radio
         };
 
         /**
-         * @brief Structure to hold the state of a single modem channel, including its assigned RX and TX devices, modulation mode,
+         * @brief Structure to hold the state of a single modem channel, including its assigned RX and TX devices,
          * sample queues, and runtime statistics. This structure is used internally by the RadioManager to manage the 
          * state of each modem channel and facilitate the queuing of samples for transmission and reception.
          */
@@ -198,7 +183,6 @@ namespace radio
             uint8_t modemId;
             int rxDevice;
             int txDevice;
-            ModulationMode modulation;
 
             uint32_t rxFreq;
             uint32_t txFreq;
@@ -207,9 +191,28 @@ namespace radio
             bool txInvert;
             bool txActive;
 
-            std::deque<uint8_t> rxQueue;
-            std::deque<uint8_t> txQueue;
-            std::vector<uint8_t> rxScratch;
+            std::deque<int16_t> txSampleQueue;
+            std::deque<uint8_t> txControlQueue;
+
+            std::deque<int16_t> rxSampleQueue;
+            std::deque<uint8_t> rxControlQueue;
+            std::deque<uint16_t> rxRssiQueue;
+
+            std::vector<int16_t> rxSampleScratch;
+            std::vector<uint8_t> rxControlScratch;
+            std::vector<uint16_t> rxRssiScratch;
+
+            uint32_t txPhase;
+            std::complex<float> prevRxIq;
+            std::deque<uint8_t> delayedControl;
+
+            uint64_t txInputSamples;
+            uint64_t txZeroFillSamples;
+            uint64_t rxSamples;
+            uint64_t rxRssiClampSamples;
+            uint64_t rxControlAlignedSamples;
+            uint64_t rxControlDeferredSamples;
+            size_t maxDelayedControlDepth;
 
             uint64_t droppedRxBytes;
             uint64_t droppedTxBytes;
@@ -241,7 +244,7 @@ namespace radio
          * parameters from the provided YAML node, initializes the device and channel states accordingly, and prepares 
          * the RadioManager for starting the GNU Radio flowgraphs. The configuration includes parameters for each SDR 
          * device, such as sample rate and gain, as well as the assignment of modem channels to specific devices and 
-         * modulation modes.
+         * channel bindings.
          * @param conf YAML node containing the SDR configuration.
          * @returns bool True if the configuration was parsed successfully, otherwise false.
          */
@@ -256,7 +259,7 @@ namespace radio
         /**
          * @brief Helper to start the GNU Radio flowgraphs for all configured SDR devices. This method creates and configures the
          * GNU Radio flowgraph for each device based on the device state and assigned channels, and starts the flowgraph to 
-         * begin processing samples. It also sets up any necessary blocks for handling the sample queues and modulation processing.
+         * begin processing samples. It also sets up the IQ/sample shim blocks used by the channel queues.
          */
         void startRadios();
         /**

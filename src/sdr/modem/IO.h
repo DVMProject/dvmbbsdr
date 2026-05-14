@@ -311,6 +311,7 @@ namespace modem
         pthread_t m_threadStatus;
 
         std::vector<short> m_audioBufTx;
+        std::vector<uint8_t> m_controlBufTx;
         std::vector<short> m_audioBufRx;
 
         // Keep TX asserted briefly across short production gaps to avoid PTT chatter.

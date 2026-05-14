@@ -733,6 +733,7 @@ void IO::startInt()
     */
 
     m_audioBufTx = std::vector<short>();
+    m_controlBufTx = std::vector<uint8_t>();
     m_audioBufRx = std::vector<short>();
 
     if (::pthread_mutex_init(&m_txLock, NULL) != 0) {
@@ -861,12 +862,14 @@ void IO::interrupt()
     while (m_txBuffer.get(sample, control)) {
         // FM mode: stage real samples and emit fixed-size frames at modem cadence.
         m_audioBufTx.push_back(static_cast<short>(sample));
+        m_controlBufTx.push_back(control);
 
         if (m_audioBufTx.size() >= TX_FRAME_SAMPLES) {
-            m_modem->transmitFMSamples(reinterpret_cast<const uint8_t*>(m_audioBufTx.data()),
-                TX_FRAME_SAMPLES * sizeof(short));
+            m_modem->transmitRFSamples(reinterpret_cast<const int16_t*>(m_audioBufTx.data()),
+                m_controlBufTx.data(), TX_FRAME_SAMPLES);
 
             m_audioBufTx.erase(m_audioBufTx.begin(), m_audioBufTx.begin() + TX_FRAME_SAMPLES);
+            m_controlBufTx.erase(m_controlBufTx.begin(), m_controlBufTx.begin() + TX_FRAME_SAMPLES);
             ::pthread_mutex_unlock(&m_txLock);
             ::usleep(9600 * 3); // 9.6k baud for 30ms of samples to pace the modem correctly; TODO: replace with a more robust scheduler/timer mechanism
             ::pthread_mutex_lock(&m_txLock);
@@ -941,28 +944,25 @@ void IO::logRxRfSamples(uint32_t bytes, bool iqMode)
 
 void IO::interruptRx()
 {
-    uint8_t control = MARK_NONE;
-
-    // FM mode: receive FM-demodulated real audio samples from the SDR path.
-    uint8_t* samples = nullptr;
-    int size = m_modem->readFMSamples(samples);
-    if (size < 1 || samples == nullptr) {
+    int16_t* samples = nullptr;
+    uint8_t* controls = nullptr;
+    uint16_t* rssi = nullptr;
+    int count = m_modem->readRFSamples(samples, controls, rssi);
+    if (count < 1 || samples == nullptr) {
         return;
     }
 
-    const uint8_t* sampleBytes = samples;
-
     if (m_debug)
-        logRxRfSamples(static_cast<uint32_t>(size), false);
+        logRxRfSamples(static_cast<uint32_t>(count * sizeof(int16_t)), true);
 
     ::pthread_mutex_lock(&m_rxLock);
 
-    for (int i = 0; i < size; i += 2) {
-        int16_t sample = 0;
-        ::memcpy(&sample, sampleBytes + i, sizeof(short));
-
-        m_rxBuffer.put(sample, control);
-        m_rssiBuffer.put(3U);
+    for (int i = 0; i < count; i++) {
+        const int16_t sample = samples[i];
+        const uint8_t sampleControl = (controls != nullptr) ? controls[i] : MARK_NONE;
+        const uint16_t sampleRssi = (rssi != nullptr) ? rssi[i] : 3U;
+        m_rxBuffer.put(sample, sampleControl);
+        m_rssiBuffer.put(sampleRssi);
     }
     ::pthread_mutex_unlock(&m_rxLock);
 }

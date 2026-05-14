@@ -10,13 +10,9 @@
 
 #include "common/Log.h"
 
-#include <gnuradio/analog/frequency_modulator_fc.h>
-#include <gnuradio/analog/quadrature_demod_cf.h>
 #include <gnuradio/blocks/add_blk.h>
-#include <gnuradio/blocks/float_to_short.h>
 #include <gnuradio/blocks/multiply_const.h>
 #include <gnuradio/blocks/rotator_cc.h>
-#include <gnuradio/blocks/short_to_float.h>
 #include <gnuradio/filter/firdes.h>
 #include <gnuradio/filter/freq_xlating_fir_filter.h>
 #include <gnuradio/filter/rational_resampler.h>
@@ -48,7 +44,7 @@ using namespace radio;
 
 #define MAX_CHANNEL_RX_QUEUE_BYTES 96000U
 #define MAX_CHANNEL_TX_QUEUE_BYTES 96000U
-#define RX_POP_BURST_BYTES 960U
+#define RX_POP_BURST_SAMPLES 480U
 #define STATUS_PUBLISH_INTERVAL_MS 500U
 #define DIAGNOSTICS_LOG_INTERVAL_MS 5000U
 
@@ -56,8 +52,10 @@ using namespace radio;
 #define CHANNELIZER_TARGET_RATE 96000.0
 
 #define NBFM_BANDWIDTH_HZ 12500.0
-#define NBFM_DEVIATION_HZ 2500.0
-#define C4FM_DEVIATION_HZ 2880.0
+#define RX_RSSI_SCALE 100000000.0f
+#define TX_FM_DEVIATION 550000
+#define CONTROL_DELAY_SAMPLES 96U
+#define CHANNEL_MARK_NONE 0x00U
 
 // ---------------------------------------------------------------------------
 //  Global Functions
@@ -80,35 +78,6 @@ bool parseCanTx(const std::string& args)
         return false;
 
     return true;
-}
-
-/**
- * @brief Parses a modulation mode from the device args string, defaulting to FM_C4FM if not specified or unrecognized.
- * @param args Device args string.
- * @return ModulationMode Parsed modulation mode.
- */
-ModulationMode parseModulationMode(const std::string& mode)
-{
-    if (mode == "IQ_CQPSK")
-        return ModulationMode::IQ_CQPSK;
-
-    return ModulationMode::FM_C4FM;
-}
-
-/**
- * @brief Converts a modulation mode to a string for logging.
- * @param mode Modulation mode to convert.
- * @return const char* String representation of the modulation mode.
- */
-const char* modulationToString(ModulationMode mode)
-{
-    switch (mode) {
-    case ModulationMode::IQ_CQPSK:
-        return "IQ_CQPSK";
-    case ModulationMode::FM_C4FM:
-    default:
-        return "FM_C4FM";
-    }
 }
 
 /**
@@ -145,6 +114,42 @@ unsigned asUnsignedRate(double rate, unsigned fallback)
     return static_cast<unsigned>(rounded);
 }
 
+/**
+ * @brief Helper to clamp a floating-point RSSI value to the valid range of 0.0 to 65535.0, which corresponds to 
+ * the range of a uint16_t.
+ * @param v RSSI value to clamp.
+ * @return float Clamped RSSI value.
+ */
+float clampRssi(float v)
+{
+    if (v < 0.0f)
+        return 0.0f;
+    if (v > 65535.0f)
+        return 65535.0f;
+    return v;
+}
+
+/**
+ * @brief Helper to clamp a long value to the valid range of int16_t, incrementing a counter if clamping occurs.
+ * @param v Value to clamp.
+ * @param clampCounter Counter to increment if clamping occurs.
+ * @return int16_t Clamped value.
+ */
+int16_t clampToInt16(long v, uint64_t& clampCounter)
+{
+    if (v > 32767L) {
+        clampCounter++;
+        return 32767;
+    }
+
+    if (v < -32768L) {
+        clampCounter++;
+        return -32768;
+    }
+
+    return static_cast<int16_t>(v);
+}
+
 // ---------------------------------------------------------------------------
 //  Externs
 // ---------------------------------------------------------------------------
@@ -156,33 +161,33 @@ extern uint64_t monotonicMs();
 // ---------------------------------------------------------------------------
 
 /**
- * @brief GNU Radio source block that provides TX samples to the SDR runtime for a specific modem channel.
+ * @brief GNU Radio source block that provides TX IQ samples to the SDR runtime for a specific modem channel.
  */
-class ModemTxSource final : public gr::sync_block {
+class ModemTxIqSource final : public gr::sync_block {
 public:
-    using sptr = std::shared_ptr<ModemTxSource>;
+    using sptr = std::shared_ptr<ModemTxIqSource>;
 
     /**
-     * @brief Factory method to create a new instance of the ModemTxSource block.
+     * @brief Factory method to create a new instance of the ModemTxIqSource block.
      * @param manager Pointer to the RadioManager instance for sample queue interaction.
      * @param modemId Modem ID associated with this TX source block.
      * @return sptr Shared pointer to the created ModemTxSource instance.
      */
     static sptr make(RadioManager* manager, uint8_t modemId)
     {
-        return std::make_shared<ModemTxSource>(manager, modemId);
+        return std::make_shared<ModemTxIqSource>(manager, modemId);
     }
 
     /**
-     * @brief Initializes a new instance of the ModemTxSource class. Initializing the sync_block with appropriate 
+     * @brief Initializes a new instance of the ModemTxIqSource class.
      * input and output signatures.
      * @param manager Pointer to the RadioManager instance for sample queue interaction.
      * @param modemId Modem ID associated with this TX source block.
      */
-    ModemTxSource(RadioManager* manager, uint8_t modemId) :
-        gr::sync_block("dvmbbsdr_modem_tx_source",
+    ModemTxIqSource(RadioManager* manager, uint8_t modemId) :
+        gr::sync_block("dvmbbsdr_modem_tx_iq_source",
             gr::io_signature::make(0, 0, 0),
-            gr::io_signature::make(1, 1, sizeof(int16_t))),
+            gr::io_signature::make(1, 1, sizeof(gr_complex))),
         m_manager(manager),
         m_modemId(modemId)
     {
@@ -190,9 +195,7 @@ public:
     }
 
     /**
-     * @brief Overrides the work function of the sync_block to provide TX samples from the RadioManager's channel queue to
-     * the GNU Radio flowgraph. If the channel is not active, outputs silence. If the channel is active but there are 
-     * not enough samples, outputs available samples followed by silence.
+     * @brief Overrides the work function of the sync_block to provide TX IQ samples.
      * @param noutput_items Number of output items (samples) to produce.
      * @param input_items Vector of input buffers (not used in this block).
      * @param output_items Vector of output buffers where the block should write its output samples.
@@ -200,20 +203,20 @@ public:
      */
     int work(int noutput_items, gr_vector_const_void_star&, gr_vector_void_star& output_items) override
     {
-        int16_t* out = reinterpret_cast<int16_t*>(output_items[0]);
+        gr_complex* out = reinterpret_cast<gr_complex*>(output_items[0]);
         if (m_manager == nullptr || out == nullptr || noutput_items <= 0)
             return 0;
 
         const bool txActive = m_manager->isChannelTxActive(m_modemId);
         if (!txActive) {
-            std::memset(out, 0x00, static_cast<size_t>(noutput_items) * sizeof(int16_t));
+            std::fill_n(out, static_cast<size_t>(noutput_items), gr_complex(0.0f, 0.0f));
             return noutput_items;
         }
 
         const size_t requested = static_cast<size_t>(noutput_items);
-        const size_t got = m_manager->dequeueChannelTxSamples(m_modemId, out, requested);
+        const size_t got = m_manager->dequeueChannelTxIqSamples(m_modemId, out, requested);
         if (got < requested) {
-            std::memset(out + got, 0x00, (requested - got) * sizeof(int16_t));
+            std::fill(out + got, out + requested, gr_complex(0.0f, 0.0f));
         }
 
         return noutput_items;
@@ -229,33 +232,33 @@ private:
 // ---------------------------------------------------------------------------
 
 /**
- * @brief GNU Radio sink block that receives RX samples from the GNU Radio flowgraph for a specific modem channel and
+ * @brief GNU Radio sink block that receives RX IQ samples from the GNU Radio flowgraph for a specific modem channel and
  * queues them in the RadioManager for modem processing.
  */
-class ModemRxSink final : public gr::sync_block {
+class ModemRxIqSink final : public gr::sync_block {
 public:
-    using sptr = std::shared_ptr<ModemRxSink>;
+    using sptr = std::shared_ptr<ModemRxIqSink>;
 
     /**
-     * @brief Factory method to create a new instance of the ModemRxSink block.
+     * @brief Factory method to create a new instance of the ModemRxIqSink block.
      * @param manager Pointer to the RadioManager instance for sample queue interaction.
      * @param modemId Modem ID associated with this RX sink block.
      * @return sptr Shared pointer to the created ModemRxSink instance.
      */
     static sptr make(RadioManager* manager, uint8_t modemId)
     {
-        return std::make_shared<ModemRxSink>(manager, modemId);
+        return std::make_shared<ModemRxIqSink>(manager, modemId);
     }
 
     /**
-     * @brief Initializes a new instance of the ModemRxSink class. Initializing the sync_block with appropriate input 
-     * and output signatures.
+     * @brief Initializes a new instance of the ModemRxIqSink class.
+     * Initializing the sync_block with appropriate input and output signatures.
      * @param manager Pointer to the RadioManager instance for sample queue interaction.
      * @param modemId Modem ID associated with this RX sink block.
      */
-    ModemRxSink(RadioManager* manager, uint8_t modemId) :
-        gr::sync_block("dvmbbsdr_modem_rx_sink",
-            gr::io_signature::make(1, 1, sizeof(int16_t)),
+    ModemRxIqSink(RadioManager* manager, uint8_t modemId) :
+        gr::sync_block("dvmbbsdr_modem_rx_iq_sink",
+            gr::io_signature::make(1, 1, sizeof(gr_complex)),
             gr::io_signature::make(0, 0, 0)),
         m_manager(manager),
         m_modemId(modemId)
@@ -264,9 +267,7 @@ public:
     }
 
     /**
-     * @brief Overrides the work function of the sync_block to receive RX samples from the GNU Radio flowgraph and queue them
-     * in the RadioManager for modem processing. The input samples are expected to be int16_t PCM samples, which are then 
-     * reinterpreted as uint8_t bytes for queuing.
+     * @brief Overrides the work function of the sync_block to receive RX IQ samples from the GNU Radio flowgraph.
      * @param noutput_items Number of input items (samples) received.
      * @param input_items Vector of input buffers containing the received samples.
      * @param output_items Vector of output buffers (not used in this block).
@@ -276,11 +277,11 @@ public:
         gr_vector_const_void_star& input_items,
         gr_vector_void_star&) override
     {
-        const int16_t* in = reinterpret_cast<const int16_t*>(input_items[0]);
+        const gr_complex* in = reinterpret_cast<const gr_complex*>(input_items[0]);
         if (m_manager == nullptr || in == nullptr || noutput_items <= 0)
             return 0;
 
-        m_manager->enqueueChannelRxSamples(m_modemId, in, static_cast<size_t>(noutput_items));
+        m_manager->enqueueChannelRxIqSamples(m_modemId, in, static_cast<size_t>(noutput_items));
         return noutput_items;
     }
 
@@ -412,7 +413,6 @@ struct RadioManager::RuntimeContext {
 
 /* Gets the singleton instance of the RadioManager. */
 
-
 RadioManager& RadioManager::instance()
 {
     static RadioManager s_instance;
@@ -504,54 +504,67 @@ void RadioManager::setChannelTxActive(uint8_t modemId, bool active)
 
 /* Helper to push samples to a channel's TX queue. */
 
-void RadioManager::pushChannelTxSamples(uint8_t modemId, const uint8_t* samples, size_t length)
+void RadioManager::pushChannelTxSamples(uint8_t modemId, const int16_t* samples, const uint8_t* control, size_t sampleCount)
 {
-    if (samples == nullptr || length == 0U)
+    if (samples == nullptr || sampleCount == 0U)
         return;
 
     std::lock_guard<std::mutex> lock(m_lock);
     ChannelState& ch = ensureChannel(modemId);
 
-    for (size_t i = 0U; i < length; ++i)
-        ch.txQueue.push_back(samples[i]);
+    for (size_t i = 0U; i < sampleCount; ++i) {
+        ch.txSampleQueue.push_back(samples[i]);
+        ch.txControlQueue.push_back(control != nullptr ? control[i] : CHANNEL_MARK_NONE);
+    }
 
-    while (ch.txQueue.size() > MAX_CHANNEL_TX_QUEUE_BYTES) {
-        ch.txQueue.pop_front();
-        ch.droppedTxBytes++;
+    while (ch.txSampleQueue.size() > (MAX_CHANNEL_TX_QUEUE_BYTES / sizeof(int16_t))) {
+        ch.txSampleQueue.pop_front();
+        ch.txControlQueue.pop_front();
+        ch.droppedTxBytes += sizeof(int16_t);
     }
 }
 
 /* Helper to pop samples from a channel's RX queue. */
 
-int RadioManager::popChannelRxSamples(uint8_t modemId, uint8_t*& samples)
+int RadioManager::popChannelRxSamples(uint8_t modemId, int16_t*& samples, uint8_t*& control, uint16_t*& rssi)
 {
     samples = nullptr;
+    control = nullptr;
+    rssi = nullptr;
 
     std::lock_guard<std::mutex> lock(m_lock);
     ChannelState& ch = ensureChannel(modemId);
-    if (ch.rxQueue.empty())
+    if (ch.rxSampleQueue.empty())
         return 0;
 
-    size_t count = std::min(ch.rxQueue.size(), (size_t)RX_POP_BURST_BYTES);
-    if ((count % sizeof(int16_t)) != 0U)
-        count -= 1U;
-
+    const size_t count = std::min(ch.rxSampleQueue.size(), static_cast<size_t>(RX_POP_BURST_SAMPLES));
     if (count == 0U)
         return 0;
 
-    ch.rxScratch.resize(count);
+    ch.rxSampleScratch.resize(count);
+    ch.rxControlScratch.resize(count);
+    ch.rxRssiScratch.resize(count);
+
     for (size_t i = 0U; i < count; ++i) {
-        ch.rxScratch[i] = ch.rxQueue.front();
-        ch.rxQueue.pop_front();
+        ch.rxSampleScratch[i] = ch.rxSampleQueue.front();
+        ch.rxSampleQueue.pop_front();
+
+        ch.rxControlScratch[i] = ch.rxControlQueue.front();
+        ch.rxControlQueue.pop_front();
+
+        ch.rxRssiScratch[i] = ch.rxRssiQueue.front();
+        ch.rxRssiQueue.pop_front();
     }
 
-    samples = ch.rxScratch.data();
+    samples = ch.rxSampleScratch.data();
+    control = ch.rxControlScratch.data();
+    rssi = ch.rxRssiScratch.data();
     return static_cast<int>(count);
 }
 
-/* Helper to dequeue samples from a channel's TX queue. */
+/* Helper to dequeue IQ samples from a channel's TX queue. */
 
-size_t RadioManager::dequeueChannelTxSamples(uint8_t modemId, int16_t* dst, size_t sampleCount)
+size_t RadioManager::dequeueChannelTxIqSamples(uint8_t modemId, std::complex<float>* dst, size_t sampleCount)
 {
     if (dst == nullptr || sampleCount == 0U)
         return 0U;
@@ -559,31 +572,43 @@ size_t RadioManager::dequeueChannelTxSamples(uint8_t modemId, int16_t* dst, size
     std::lock_guard<std::mutex> lock(m_lock);
     ChannelState& ch = ensureChannel(modemId);
 
-    const size_t availableSamples = ch.txQueue.size() / sizeof(int16_t);
-    const size_t copySamples = std::min(sampleCount, availableSamples);
+    for (size_t i = 0U; i < sampleCount; ++i) {
+        int16_t txSample = 0;
+        uint8_t txControl = CHANNEL_MARK_NONE;
 
-    for (size_t i = 0U; i < copySamples; ++i) {
-        uint8_t raw[sizeof(int16_t)];
-        raw[0] = ch.txQueue.front();
-        ch.txQueue.pop_front();
-        raw[1] = ch.txQueue.front();
-        ch.txQueue.pop_front();
+        if (!ch.txSampleQueue.empty()) {
+            txSample = ch.txSampleQueue.front();
+            ch.txSampleQueue.pop_front();
 
-        int16_t value = 0;
-        std::memcpy(&value, raw, sizeof(int16_t));
+            txControl = ch.txControlQueue.front();
+            ch.txControlQueue.pop_front();
+            ch.txInputSamples++;
+        }
+        else {
+            ch.txZeroFillSamples++;
+        }
 
         if (ch.txInvert)
-            value = static_cast<int16_t>(-value);
+            txSample = static_cast<int16_t>(-txSample);
 
-        dst[i] = value;
+        ch.delayedControl.push_back(txControl);
+        ch.maxDelayedControlDepth = std::max(ch.maxDelayedControlDepth, ch.delayedControl.size());
+        const size_t maxDelayed = CONTROL_DELAY_SAMPLES + (MAX_CHANNEL_TX_QUEUE_BYTES / sizeof(int16_t));
+        while (ch.delayedControl.size() > maxDelayed) {
+            ch.delayedControl.pop_front();
+        }
+
+        ch.txPhase += static_cast<uint32_t>(static_cast<int32_t>(txSample) * TX_FM_DEVIATION);
+        const float ph = static_cast<float>(ch.txPhase) * static_cast<float>(M_PI / 0x80000000UL);
+        dst[i] = std::polar(1.0f, ph);
     }
 
-    return copySamples;
+    return sampleCount;
 }
 
-/* Helper to enqueue samples to a channel's RX queue. */
+/* Helper to enqueue IQ samples to a channel's RX queue. */
 
-void RadioManager::enqueueChannelRxSamples(uint8_t modemId, const int16_t* src, size_t sampleCount)
+void RadioManager::enqueueChannelRxIqSamples(uint8_t modemId, const std::complex<float>* src, size_t sampleCount)
 {
     if (src == nullptr || sampleCount == 0U)
         return;
@@ -592,18 +617,42 @@ void RadioManager::enqueueChannelRxSamples(uint8_t modemId, const int16_t* src, 
     ChannelState& ch = ensureChannel(modemId);
 
     for (size_t i = 0U; i < sampleCount; ++i) {
-        int16_t sample = src[i];
+        const std::complex<float> iq = src[i];
+        const float d = std::arg(iq * std::conj(ch.prevRxIq));
+        ch.prevRxIq = iq;
+        ch.rxSamples++;
+
+        const long discr = static_cast<long>(std::lround(d * (4096.0f / static_cast<float>(M_PI))));
+        int16_t sample = clampToInt16(discr, ch.rxRssiClampSamples);
         if (ch.rxInvert)
             sample = static_cast<int16_t>(-sample);
 
-        const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&sample);
-        ch.rxQueue.push_back(bytes[0]);
-        ch.rxQueue.push_back(bytes[1]);
+        uint8_t alignedControl = CHANNEL_MARK_NONE;
+        if (ch.delayedControl.size() > CONTROL_DELAY_SAMPLES) {
+            alignedControl = ch.delayedControl.front();
+            ch.delayedControl.pop_front();
+            ch.rxControlAlignedSamples++;
+        }
+        else {
+            ch.rxControlDeferredSamples++;
+        }
+
+        const float rawRssiFloat = RX_RSSI_SCALE * std::norm(iq);
+        if (rawRssiFloat > 65535.0f || rawRssiFloat < 0.0f)
+            ch.rxRssiClampSamples++;
+        const float rssiFloat = clampRssi(rawRssiFloat);
+        const uint16_t rxRssi = static_cast<uint16_t>(rssiFloat);
+
+        ch.rxSampleQueue.push_back(sample);
+        ch.rxControlQueue.push_back(alignedControl);
+        ch.rxRssiQueue.push_back(rxRssi);
     }
 
-    while (ch.rxQueue.size() > MAX_CHANNEL_RX_QUEUE_BYTES) {
-        ch.rxQueue.pop_front();
-        ch.droppedRxBytes++;
+    while (ch.rxSampleQueue.size() > (MAX_CHANNEL_RX_QUEUE_BYTES / sizeof(int16_t))) {
+        ch.rxSampleQueue.pop_front();
+        ch.rxControlQueue.pop_front();
+        ch.rxRssiQueue.pop_front();
+        ch.droppedRxBytes += sizeof(int16_t);
     }
 }
 
@@ -661,16 +710,30 @@ RadioManager::ChannelState& RadioManager::ensureChannel(uint8_t modemId)
     ch.modemId = modemId;
     ch.rxDevice = 0;
     ch.txDevice = 0;
-    ch.modulation = ModulationMode::FM_C4FM;
     ch.rxFreq = 0U;
     ch.txFreq = 0U;
     ch.rfPower = 0U;
     ch.rxInvert = false;
     ch.txInvert = false;
     ch.txActive = false;
-    ch.rxQueue.clear();
-    ch.txQueue.clear();
-    ch.rxScratch.clear();
+    ch.txSampleQueue.clear();
+    ch.txControlQueue.clear();
+    ch.rxSampleQueue.clear();
+    ch.rxControlQueue.clear();
+    ch.rxRssiQueue.clear();
+    ch.rxSampleScratch.clear();
+    ch.rxControlScratch.clear();
+    ch.rxRssiScratch.clear();
+    ch.txPhase = 0U;
+    ch.prevRxIq = std::complex<float>(0.0f, 0.0f);
+    ch.delayedControl.assign(CONTROL_DELAY_SAMPLES, CHANNEL_MARK_NONE);
+    ch.txInputSamples = 0U;
+    ch.txZeroFillSamples = 0U;
+    ch.rxSamples = 0U;
+    ch.rxRssiClampSamples = 0U;
+    ch.rxControlAlignedSamples = 0U;
+    ch.rxControlDeferredSamples = 0U;
+    ch.maxDelayedControlDepth = ch.delayedControl.size();
     ch.droppedRxBytes = 0U;
     ch.droppedTxBytes = 0U;
 
@@ -754,12 +817,10 @@ bool RadioManager::parseConfig(yaml::Node& conf)
         const int sharedDevice = radioConf["device"].as<int>(0);
         const int rxDevice = radioConf["rxDevice"].as<int>(sharedDevice);
         const int txDevice = radioConf["txDevice"].as<int>(sharedDevice);
-        const std::string mode = radioConf["modulationMode"].as<std::string>("FM_C4FM");
 
         ChannelState& ch = ensureChannel(modemId);
         ch.rxDevice = rxDevice;
         ch.txDevice = txDevice;
-        ch.modulation = parseModulationMode(mode);
 
         if (ch.rxDevice < 0 || static_cast<size_t>(ch.rxDevice) >= m_devices.size()) {
             ::LogWarning(LOG_SDR, "Modem %u references invalid rxDevice=%d, remapping to 0", modemId, ch.rxDevice);
@@ -779,8 +840,7 @@ bool RadioManager::parseConfig(yaml::Node& conf)
                 txDev.args.c_str());
         }
 
-        ::LogInfoEx(LOG_SDR, "Modem %u BINDING, RX dev=%d, TX dev=%d, mode=%s", modemId, ch.rxDevice, ch.txDevice, 
-            modulationToString(ch.modulation));
+        ::LogInfoEx(LOG_SDR, "Modem %u BINDING, RX dev=%d, TX dev=%d, mode=IQ_ONLY", modemId, ch.rxDevice, ch.txDevice);
     }
 
     return true;
@@ -894,9 +954,9 @@ void RadioManager::startRadios()
             const double chanRate = dev.sampleRate / static_cast<double>(decim);
 
             const std::vector<float> xlateTaps = gr::filter::firdes::low_pass(1.0, dev.sampleRate, NBFM_BANDWIDTH_HZ,
-                C4FM_DEVIATION_HZ, gr::fft::window::WIN_HAMMING);
+                NBFM_BANDWIDTH_HZ * 0.35, gr::fft::window::WIN_HAMMING);
 
-            // for each assigned RX channel, create a chain of blocks to translate, demodulate, resample, and sink the 
+            // for each assigned RX channel, create a chain of blocks to translate, resample, and sink IQ to the shim.
             // samples to the modem processing queue
             for (uint8_t modemId : rxIt->second) {
                 auto chIt = m_channels.find(modemId);
@@ -909,33 +969,23 @@ void RadioManager::startRadios()
                 auto xlate = gr::filter::freq_xlating_fir_filter_ccf::make(static_cast<int>(decim), xlateTaps,
                     offsetHz, dev.sampleRate);
 
-                const float demodGain = static_cast<float>(chanRate / (2.0 * M_PI * C4FM_DEVIATION_HZ));
-                auto demod = gr::analog::quadrature_demod_cf::make(demodGain);
-
                 const unsigned chanRateInt = asUnsignedRate(chanRate, 96000U);
                 const unsigned g = std::gcd(chanRateInt, static_cast<unsigned>(MODEM_SAMPLE_RATE));
                 const unsigned interp = static_cast<unsigned>(MODEM_SAMPLE_RATE) / g;
                 const unsigned dec = chanRateInt / g;
-                auto resamp = gr::filter::rational_resampler_fff::make(interp, dec);
-
-                // Modem expects samples in range ±4096, not full ±32767.
-                auto f2s = gr::blocks::float_to_short::make(1U, 1152.0f);
-                auto rxSink = ModemRxSink::make(this, modemId);
+                auto resamp = gr::filter::rational_resampler_ccf::make(interp, dec);
+                auto rxSink = ModemRxIqSink::make(this, modemId);
 
                 runtime.tb->connect(runtime.source, 0, xlate, 0);
-                runtime.tb->connect(xlate, 0, demod, 0);
-                runtime.tb->connect(demod, 0, resamp, 0);
-                runtime.tb->connect(resamp, 0, f2s, 0);
-                runtime.tb->connect(f2s, 0, rxSink, 0);
+                runtime.tb->connect(xlate, 0, resamp, 0);
+                runtime.tb->connect(resamp, 0, rxSink, 0);
 
                 RuntimeContext::ChannelRuntime chRuntime;
                 chRuntime.rxXlate = xlate;
                 runtime.channels[modemId] = chRuntime;
 
                 runtime.keepAlive.push_back(xlate);
-                runtime.keepAlive.push_back(demod);
                 runtime.keepAlive.push_back(resamp);
-                runtime.keepAlive.push_back(f2s);
                 runtime.keepAlive.push_back(rxSink);
             }
         }
@@ -954,7 +1004,7 @@ void RadioManager::startRadios()
 
             std::vector<gr::basic_block_sptr> carrierOutputs;
 
-            // for each assigned TX channel, create a chain of blocks to modulate, resample, rotate, and sum the samples
+            // for each assigned TX channel, create a chain of blocks to resample, rotate, and sum IQ.
             // from the modem processing queue to produce the final output to the SDR sink
             for (uint8_t modemId : txIt->second) {
                 auto chIt = m_channels.find(modemId);
@@ -964,13 +1014,7 @@ void RadioManager::startRadios()
                 const ChannelState& ch = chIt->second;
                 const double offsetHz = static_cast<double>(ch.txFreq) - static_cast<double>(dev.txCenter);
 
-                auto txSrc = ModemTxSource::make(this, modemId);
-                // Modem samples are q15_t values in range ±4096, not full ±32768.
-                // Scale by 4096 to normalize to ±1.0 range for FM modulation.
-                auto s2f = gr::blocks::short_to_float::make(1U, 1152.0f);
-                // FM modulator sensitivity: 2π × deviation / sample_rate.
-                // P25 C4FM uses ±2.88 kHz deviation per specification.
-                auto fmMod = gr::analog::frequency_modulator_fc::make(static_cast<float>(safePhaseInc(C4FM_DEVIATION_HZ, MODEM_SAMPLE_RATE)));
+                auto txSrc = ModemTxIqSource::make(this, modemId);
 
                 const unsigned deviceRateInt = asUnsignedRate(dev.sampleRate, 960000U);
                 const unsigned modemRateInt = static_cast<unsigned>(MODEM_SAMPLE_RATE);
@@ -982,9 +1026,7 @@ void RadioManager::startRadios()
                 auto rot = gr::blocks::rotator_cc::make(safePhaseInc(offsetHz, dev.sampleRate));
                 auto txGate = ModemTxGate::make(this, modemId);
 
-                runtime.tb->connect(txSrc, 0, s2f, 0);
-                runtime.tb->connect(s2f, 0, fmMod, 0);
-                runtime.tb->connect(fmMod, 0, up, 0);
+                runtime.tb->connect(txSrc, 0, up, 0);
                 runtime.tb->connect(up, 0, rot, 0);
                 runtime.tb->connect(rot, 0, txGate, 0);
 
@@ -992,8 +1034,6 @@ void RadioManager::startRadios()
                 chRuntime.txRotator = rot;
 
                 runtime.keepAlive.push_back(txSrc);
-                runtime.keepAlive.push_back(s2f);
-                runtime.keepAlive.push_back(fmMod);
                 runtime.keepAlive.push_back(up);
                 runtime.keepAlive.push_back(rot);
                 runtime.keepAlive.push_back(txGate);
@@ -1263,6 +1303,39 @@ std::string RadioManager::buildRuntimeStatusJson() const
         ss << "}";
     }
 
+        ss << "],";
+        ss << "\"channels\":[";
+
+    // for each channel, include its modem ID, current RX and TX queue sizes in samples, the depth of the delayed 
+    // control queue, the computed control lag in samples, the current TX phase accumulator value, counts of shim input 
+    // and zero fill samples for TX and shim samples and statistics for RX
+    bool firstChannel = true;
+    for (const auto& it : m_channels) {
+        const ChannelState& ch = it.second;
+        if (!firstChannel)
+            ss << ",";
+        firstChannel = false;
+
+        const size_t delayedDepth = ch.delayedControl.size();
+        const long long controlLag = (delayedDepth > CONTROL_DELAY_SAMPLES) ? static_cast<long long>(delayedDepth - CONTROL_DELAY_SAMPLES) : 0LL;
+
+        ss << "{";
+            ss << "\"modemId\":" << static_cast<unsigned>(ch.modemId) << ",";
+            ss << "\"txQueueSamples\":" << ch.txSampleQueue.size() << ",";
+            ss << "\"rxQueueSamples\":" << ch.rxSampleQueue.size() << ",";
+            ss << "\"delayedControlDepth\":" << delayedDepth << ",";
+            ss << "\"maxDelayedControlDepth\":" << ch.maxDelayedControlDepth << ",";
+            ss << "\"controlLagSamples\":" << controlLag << ",";
+            ss << "\"txPhase\":" << ch.txPhase << ",";
+            ss << "\"txInputSamples\":" << ch.txInputSamples << ",";
+            ss << "\"txZeroFillSamples\":" << ch.txZeroFillSamples << ",";
+            ss << "\"rxSamples\":" << ch.rxSamples << ",";
+            ss << "\"rxRssiClampSamples\":" << ch.rxRssiClampSamples << ",";
+            ss << "\"rxControlAlignedSamples\":" << ch.rxControlAlignedSamples << ",";
+            ss << "\"rxControlDeferredSamples\":" << ch.rxControlDeferredSamples;
+        ss << "}";
+    }
+
         ss << "]";
     ss << "}";
     return ss.str();
@@ -1281,7 +1354,6 @@ void RadioManager::logRuntimeDiagnostics(uint64_t nowMs)
     m_lastDiagnosticsLogMs = nowMs;
 
     ::LogInfoEx(LOG_SDR, "RadioManager DIAGNOSTICS, devices=%zu, channels=%zu", m_devices.size(), m_channels.size());
-
     // for each channel, log the current RX and TX queue sizes in bytes and samples, the total dropped bytes for RX and TX, 
     // the assigned device indices and frequencies, the computed center frequencies and offsets from center, and whether 
     // the channel is currently active for transmission
@@ -1298,13 +1370,19 @@ void RadioManager::logRuntimeDiagnostics(uint64_t nowMs)
         const int64_t rxOffset = (rxCenter > 0U && ch.rxFreq > 0U) ? static_cast<int64_t>(ch.rxFreq) - static_cast<int64_t>(rxCenter) : 0LL;
         const int64_t txOffset = (txCenter > 0U && ch.txFreq > 0U) ? static_cast<int64_t>(ch.txFreq) - static_cast<int64_t>(txCenter) : 0LL;
 
-        const size_t rxQueueBytes = ch.rxQueue.size();
-        const size_t txQueueBytes = ch.txQueue.size();
-        const size_t rxQueueSamples = rxQueueBytes / sizeof(int16_t);
-        const size_t txQueueSamples = txQueueBytes / sizeof(int16_t);
+        const size_t rxQueueSamples = ch.rxSampleQueue.size();
+        const size_t txQueueSamples = ch.txSampleQueue.size();
+        const size_t rxQueueBytes = rxQueueSamples * sizeof(int16_t);
+        const size_t txQueueBytes = txQueueSamples * sizeof(int16_t);
 
-        ::LogInfoEx(LOG_SDR, "Modem %u DIAGNOSTICS, rxQ = %zuB/%zuS, txQ = %zuB/%zuS, dropRx = %lluB, dropTx = %lluB, rxDev = %d, rxFreq = %u, rxCenter = %u, rxOff = %lld, txDev = %d, txFreq = %u, txCenter = %u, txOff = %lld, txActive = %u",
+        const size_t delayedDepth = ch.delayedControl.size();
+        const long long controlLag = (delayedDepth > CONTROL_DELAY_SAMPLES) ? static_cast<long long>(delayedDepth - CONTROL_DELAY_SAMPLES) : 0LL;
+
+        ::LogInfoEx(LOG_SDR, "Modem %u DIAGNOSTICS, rxQ = %zuB/%zuS, txQ = %zuB/%zuS, dropRx = %lluB, dropTx = %lluB, rxDev = %d, rxFreq = %u, rxCenter = %u, rxOff = %lld, txDev = %d, txFreq = %u, txCenter = %u, txOff = %lld, txActive = %u, dlyCtl = %zu, dlyCtlMax = %zu, ctlLag = %lld, txPhase = %u, txIn = %llu, txZero = %llu, rxShim = %llu, rxClamp = %llu, rxCtlAlign = %llu, rxCtlDef = %llu",
             ch.modemId, rxQueueBytes, rxQueueSamples, txQueueBytes, txQueueSamples,static_cast<unsigned long long>(ch.droppedRxBytes), static_cast<unsigned long long>(ch.droppedTxBytes), ch.rxDevice,
-            ch.rxFreq, rxCenter, static_cast<long long>(rxOffset), ch.txDevice, ch.txFreq, txCenter, static_cast<long long>(txOffset), ch.txActive ? 1U : 0U);
+            ch.rxFreq, rxCenter, static_cast<long long>(rxOffset), ch.txDevice, ch.txFreq, txCenter, static_cast<long long>(txOffset), ch.txActive ? 1U : 0U,
+            delayedDepth, ch.maxDelayedControlDepth, controlLag, ch.txPhase, static_cast<unsigned long long>(ch.txInputSamples),
+            static_cast<unsigned long long>(ch.txZeroFillSamples), static_cast<unsigned long long>(ch.rxSamples), static_cast<unsigned long long>(ch.rxRssiClampSamples),
+            static_cast<unsigned long long>(ch.rxControlAlignedSamples), static_cast<unsigned long long>(ch.rxControlDeferredSamples));
     }
 }
