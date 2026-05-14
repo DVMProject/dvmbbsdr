@@ -919,7 +919,7 @@ void RadioManager::startRadios()
                 auto resamp = gr::filter::rational_resampler_fff::make(interp, dec);
 
                 // Modem expects samples in range ±4096, not full ±32767.
-                auto f2s = gr::blocks::float_to_short::make(1U, 4096.0f);
+                auto f2s = gr::blocks::float_to_short::make(1U, 1152.0f);
                 auto rxSink = ModemRxSink::make(this, modemId);
 
                 runtime.tb->connect(runtime.source, 0, xlate, 0);
@@ -967,7 +967,7 @@ void RadioManager::startRadios()
                 auto txSrc = ModemTxSource::make(this, modemId);
                 // Modem samples are q15_t values in range ±4096, not full ±32768.
                 // Scale by 4096 to normalize to ±1.0 range for FM modulation.
-                auto s2f = gr::blocks::short_to_float::make(1U, 4096.0f);
+                auto s2f = gr::blocks::short_to_float::make(1U, 1152.0f);
                 // FM modulator sensitivity: 2π × deviation / sample_rate.
                 // P25 C4FM uses ±2.88 kHz deviation per specification.
                 auto fmMod = gr::analog::frequency_modulator_fc::make(static_cast<float>(safePhaseInc(C4FM_DEVIATION_HZ, MODEM_SAMPLE_RATE)));
