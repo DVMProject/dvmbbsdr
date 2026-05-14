@@ -59,7 +59,9 @@ NXDNRX::NXDNRX(modem::Modem* modem) :
     m_corrCountdown(CORRELATION_COUNTDOWN),
     m_state(NXDNRXS_NONE),
     m_rssiAccum(0U),
-    m_rssiCount(0U)
+    m_rssiCount(0U),
+    m_lastSyncPtr(0U),
+    m_timingError(0)
 {
     /* stub */
 }
@@ -190,13 +192,15 @@ void NXDNRX::processData(q15_t sample)
     if (m_dataPtr == m_endPtr) {
         // Only update the centre and threshold if they are from a good sync
         if (m_lostCount == MAX_FSW_FRAMES) {
-            m_minFSWPtr = m_fswPtr + NXDN_FRAME_LENGTH_SAMPLES - 1U;
-        if (m_minFSWPtr >= NXDN_FRAME_LENGTH_SAMPLES)
-            m_minFSWPtr -= NXDN_FRAME_LENGTH_SAMPLES;
+            // apply PLL phase correction to sync search window
+            int16_t phaseCorr = static_cast<int16_t>(m_modem->m_samplePLL.getPhaseCorrection());
+            m_minFSWPtr = m_fswPtr + NXDN_FRAME_LENGTH_SAMPLES - 1U + phaseCorr;
+            if (m_minFSWPtr >= NXDN_FRAME_LENGTH_SAMPLES)
+                m_minFSWPtr -= NXDN_FRAME_LENGTH_SAMPLES;
 
-        m_maxFSWPtr = m_fswPtr + 1U;
-        if (m_maxFSWPtr >= NXDN_FRAME_LENGTH_SAMPLES)
-            m_maxFSWPtr -= NXDN_FRAME_LENGTH_SAMPLES;
+            m_maxFSWPtr = m_fswPtr + 1U + phaseCorr;
+            if (m_maxFSWPtr >= NXDN_FRAME_LENGTH_SAMPLES)
+                m_maxFSWPtr -= NXDN_FRAME_LENGTH_SAMPLES;
         }
 
         calculateLevels(m_startPtr, NXDN_FRAME_LENGTH_SYMBOLS);
@@ -321,6 +325,13 @@ bool NXDNRX::correlateSync()
                 m_maxCorr = corr;
                 m_lostCount = MAX_FSW_FRAMES;
                 m_fswPtr = m_dataPtr;
+
+                // update PLL with timing error for sample clock recovery
+                if (m_lastSyncPtr != 0U) {
+                    m_timingError = static_cast<int16_t>(m_dataPtr - m_lastSyncPtr);
+                    m_modem->m_samplePLL.update(m_timingError);
+                }
+                m_lastSyncPtr = m_dataPtr;
 
                 m_startPtr = startPtr;
 

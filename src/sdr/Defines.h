@@ -64,6 +64,9 @@
 #error "Invalid EXTERNAL_OSC specified! Must be an integer multiple of 48000"
 #endif
 
+// Nominal sample rate for demodulation (all modes: DMR, P25, NXDN)
+#define SAMPLE_RATE_HZ   24000U
+
 // Pass RSSI information to the host
 // #define SEND_RSSI_DATA
 

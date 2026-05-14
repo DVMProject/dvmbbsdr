@@ -37,6 +37,7 @@ Modem::Modem(port::IModemPort* port, uint8_t id, std::string ptyPort, bool verbo
     m_dcd(false),
     m_serial(this),
     m_io(this, debug),
+    m_samplePLL(static_cast<double>(SAMPLE_RATE_HZ)),
     m_verbose(verbose),
     m_debug(debug),
     m_dmrIdleRX(this),

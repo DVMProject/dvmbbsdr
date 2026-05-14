@@ -102,6 +102,9 @@ namespace nxdn
         uint32_t m_rssiAccum;
         uint16_t m_rssiCount;
 
+        uint16_t m_lastSyncPtr;
+        int16_t m_timingError;
+
         /**
          * @brief Helper to process NXDN samples.
          * @param sample 

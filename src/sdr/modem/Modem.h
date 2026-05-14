@@ -39,6 +39,8 @@
 #include "modem/SerialPort.h"
 #include "modem/IO.h"
 
+#include "modem/SamplePLL.h"
+
 #include "modem/port/IModemPort.h"
 
 // ---------------------------------------------------------------------------
@@ -165,6 +167,8 @@ namespace modem
 
         SerialPort m_serial;
         IO m_io;
+
+        SamplePLL m_samplePLL;
 
         bool m_verbose;
         bool m_debug;

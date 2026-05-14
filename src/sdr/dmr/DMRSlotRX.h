@@ -114,6 +114,9 @@ namespace dmr
 
         uint16_t m_rssi[900U];
 
+        uint16_t m_lastSyncPtr;
+        int16_t m_timingError;
+
         /**
          * @brief Frame synchronization correlator.
          * @param first 

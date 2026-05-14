@@ -116,6 +116,9 @@ namespace p25
         uint32_t m_rssiAccum;
         uint16_t m_rssiCount;
 
+        uint16_t m_lastSyncPtr;
+        int16_t m_timingError;
+
         /**
          * @brief Helper to process P25 samples.
          * @param sample 

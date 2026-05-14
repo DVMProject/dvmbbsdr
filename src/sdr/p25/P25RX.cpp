@@ -64,7 +64,9 @@ P25RX::P25RX(modem::Modem* modem) :
     m_lduSyncPos(false),
     m_duid(0xFFU),
     m_rssiAccum(0U),
-    m_rssiCount(0U)
+    m_rssiCount(0U),
+    m_lastSyncPtr(0U),
+    m_timingError(0)
 {
     m_bitBuffer[0U] = m_bitBuffer[1U] = m_bitBuffer[2U] = m_bitBuffer[3U] = m_bitBuffer[4U] = 0U;
 }
@@ -151,21 +153,25 @@ void P25RX::samples(const q15_t* samples, uint16_t* rssi, uint8_t length)
             if (m_countdown == 1U) {
                 // are we using LDU sync positions?
                 if (m_lduSyncPos) {
-                    m_minSyncPtr = m_syncPtr + P25_LDU_FRAME_LENGTH_SAMPLES - 1U;
+                    // apply PLL phase correction to sync search window
+                    int16_t phaseCorr = static_cast<int16_t>(m_modem->m_samplePLL.getPhaseCorrection());
+                    m_minSyncPtr = m_syncPtr + P25_LDU_FRAME_LENGTH_SAMPLES - 1U + phaseCorr;
                     if (m_minSyncPtr >= P25_LDU_FRAME_LENGTH_SAMPLES)
                         m_minSyncPtr -= P25_LDU_FRAME_LENGTH_SAMPLES;
 
-                    m_maxSyncPtr = m_syncPtr + 1U;
+                    m_maxSyncPtr = m_syncPtr + 1U + phaseCorr;
                     if (m_maxSyncPtr >= P25_LDU_FRAME_LENGTH_SAMPLES)
                         m_maxSyncPtr -= P25_LDU_FRAME_LENGTH_SAMPLES;
 
                     m_lostCount = MAX_SYNC_FRAMES;
                 } else {
-                    m_minSyncPtr = m_syncPtr + P25_HDU_FRAME_LENGTH_SAMPLES - 1U;
+                    // apply PLL phase correction to sync search window
+                    int16_t phaseCorr = static_cast<int16_t>(m_modem->m_samplePLL.getPhaseCorrection());
+                    m_minSyncPtr = m_syncPtr + P25_HDU_FRAME_LENGTH_SAMPLES - 1U + phaseCorr;
                     if (m_minSyncPtr >= P25_LDU_FRAME_LENGTH_SAMPLES)
                         m_minSyncPtr -= P25_LDU_FRAME_LENGTH_SAMPLES;
 
-                    m_maxSyncPtr = m_syncPtr + P25_HDU_FRAME_LENGTH_SAMPLES + 1U;
+                    m_maxSyncPtr = m_syncPtr + P25_HDU_FRAME_LENGTH_SAMPLES + 1U + phaseCorr;
                     if (m_maxSyncPtr >= P25_LDU_FRAME_LENGTH_SAMPLES)
                         m_maxSyncPtr -= P25_LDU_FRAME_LENGTH_SAMPLES;
                 }
@@ -374,11 +380,13 @@ void P25RX::processVoice(q15_t sample)
     // process voice frame
     if (m_dataPtr == m_endPtr) {
         if (m_lostCount == MAX_SYNC_FRAMES) {
-            m_minSyncPtr = m_syncPtr + P25_LDU_FRAME_LENGTH_SAMPLES - 1U;
+            // apply PLL phase correction to sync search window
+            int16_t phaseCorr = static_cast<int16_t>(m_modem->m_samplePLL.getPhaseCorrection());
+            m_minSyncPtr = m_syncPtr + P25_LDU_FRAME_LENGTH_SAMPLES - 1U + phaseCorr;
             if (m_minSyncPtr >= P25_LDU_FRAME_LENGTH_SAMPLES)
                 m_minSyncPtr -= P25_LDU_FRAME_LENGTH_SAMPLES;
 
-            m_maxSyncPtr = m_syncPtr + 1U;
+            m_maxSyncPtr = m_syncPtr + 1U + phaseCorr;
             if (m_maxSyncPtr >= P25_LDU_FRAME_LENGTH_SAMPLES)
                 m_maxSyncPtr -= P25_LDU_FRAME_LENGTH_SAMPLES;
         }
@@ -481,11 +489,13 @@ void P25RX::processData(q15_t sample)
     if (m_dataPtr == m_pduEndPtr) {
         // only update the centre and threshold if they are from a good sync
         if (m_lostCount == MAX_SYNC_FRAMES) {
-            m_minSyncPtr = m_syncPtr + P25_PDU_FRAME_LENGTH_SAMPLES - 1U;
+            // apply PLL phase correction to sync search window
+            int16_t phaseCorr = static_cast<int16_t>(m_modem->m_samplePLL.getPhaseCorrection());
+            m_minSyncPtr = m_syncPtr + P25_PDU_FRAME_LENGTH_SAMPLES - 1U + phaseCorr;
             if (m_minSyncPtr >= P25_PDU_FRAME_LENGTH_SAMPLES)
                 m_minSyncPtr -= P25_PDU_FRAME_LENGTH_SAMPLES;
 
-            m_maxSyncPtr = m_syncPtr + 1U;
+            m_maxSyncPtr = m_syncPtr + 1U + phaseCorr;
             if (m_maxSyncPtr >= P25_PDU_FRAME_LENGTH_SAMPLES)
                 m_maxSyncPtr -= P25_PDU_FRAME_LENGTH_SAMPLES;
         }
@@ -615,6 +625,14 @@ bool P25RX::correlateSync()
                 m_lostCount = MAX_SYNC_FRAMES;
 
                 m_syncPtr = m_dataPtr;
+                
+                // update PLL with timing error for sample clock recovery
+                if (m_lastSyncPtr != 0U) {
+                    m_timingError = static_cast<int16_t>(m_dataPtr - m_lastSyncPtr);
+                    m_modem->m_samplePLL.update(m_timingError);
+                }
+                m_lastSyncPtr = m_dataPtr;
+                
                 m_startPtr = startPtr;
 
                 m_endPtr = m_dataPtr + P25_LDU_FRAME_LENGTH_SAMPLES - P25_SYNC_LENGTH_SAMPLES - 1U;

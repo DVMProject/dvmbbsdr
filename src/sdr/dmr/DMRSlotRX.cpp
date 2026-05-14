@@ -62,7 +62,9 @@ DMRSlotRX::DMRSlotRX(modem::Modem* modem, bool slot) :
     m_state(DMRRXS_NONE),
     m_n(0U),
     m_type(0U),
-    m_rssi()
+    m_rssi(),
+    m_lastSyncPtr(0U),
+    m_timingError(0)
 {
     /* stub */
 }
@@ -118,8 +120,10 @@ bool DMRSlotRX::processSample(q15_t sample, uint16_t rssi)
             correlateSync(true);
     }
     else {
-        uint16_t min = m_syncPtr - 1U;
-        uint16_t max = m_syncPtr + 1U;
+        // Apply PLL phase correction to sync search window
+        int16_t phaseCorr = static_cast<int16_t>(m_modem->m_samplePLL.getPhaseCorrection());
+        uint16_t min = m_syncPtr - 1U + phaseCorr;
+        uint16_t max = m_syncPtr + 1U + phaseCorr;
         if (m_dataPtr >= min && m_dataPtr <= max)
             correlateSync(false);
     }
@@ -347,6 +351,14 @@ void DMRSlotRX::correlateSync(bool first)
                     m_maxCorr = corr;
                     m_control = CONTROL_DATA;
                     m_syncPtr = m_dataPtr;
+                    
+                    // update PLL with timing error for sample clock recovery
+                    if (m_lastSyncPtr != 0U) {
+                        m_timingError = static_cast<int16_t>(m_dataPtr - m_lastSyncPtr);
+                        m_modem->m_samplePLL.update(m_timingError);
+                    }
+                    m_lastSyncPtr = m_dataPtr;
+                    
                     m_startPtr = m_dataPtr - DMR_SLOT_TYPE_LENGTH_SAMPLES / 2U - DMR_INFO_LENGTH_SAMPLES / 2U - DMR_SYNC_LENGTH_SAMPLES;
                     m_endPtr = m_dataPtr + DMR_SLOT_TYPE_LENGTH_SAMPLES / 2U + DMR_INFO_LENGTH_SAMPLES / 2U - 1U;
 
@@ -382,6 +394,14 @@ void DMRSlotRX::correlateSync(bool first)
                     m_maxCorr = corr;
                     m_control = CONTROL_VOICE;
                     m_syncPtr = m_dataPtr;
+                    
+                    // update PLL with timing error for sample clock recovery
+                    if (m_lastSyncPtr != 0U) {
+                        m_timingError = static_cast<int16_t>(m_dataPtr - m_lastSyncPtr);
+                        m_modem->m_samplePLL.update(m_timingError);
+                    }
+                    m_lastSyncPtr = m_dataPtr;
+                    
                     m_startPtr = m_dataPtr - DMR_SLOT_TYPE_LENGTH_SAMPLES / 2U - DMR_INFO_LENGTH_SAMPLES / 2U - DMR_SYNC_LENGTH_SAMPLES;
                     m_endPtr = m_dataPtr + DMR_SLOT_TYPE_LENGTH_SAMPLES / 2U + DMR_INFO_LENGTH_SAMPLES / 2U - 1U;
 
