@@ -313,10 +313,12 @@ namespace modem
         std::vector<short> m_audioBufTx;
         std::vector<short> m_audioBufRx;
 
+        // Keep TX asserted briefly across short production gaps to avoid PTT chatter.
+        uint64_t m_txLastActivityMs;
+
         bool m_abort;
 
         // RX activity debug state used to report when SDR RF samples are flowing.
-        bool m_rxRfActive;
         uint64_t m_rxRfLastDataMs;
         uint64_t m_rxRfLastReportMs;
         uint32_t m_rxRfBytes;
@@ -405,11 +407,7 @@ namespace modem
          * @param bytes Number of bytes dequeued from SDR runtime.
          * @param iqMode True when channel is in IQ mode, false for FM mode.
          */
-        void noteRxRfActivity(uint32_t bytes, bool iqMode);
-        /**
-         * @brief Emits an idle transition log after SDR RX has been quiet for a short interval.
-         */
-        void noteRxRfIdle();
+        void logRxRfSamples(uint32_t bytes, bool iqMode);
 
         /**
          * @brief 

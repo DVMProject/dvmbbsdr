@@ -54,7 +54,10 @@ using namespace radio;
 
 #define MODEM_SAMPLE_RATE 24000.0
 #define CHANNELIZER_TARGET_RATE 96000.0
-#define FM_DEVIATION_HZ 2500.0
+
+#define NBFM_BANDWIDTH_HZ 12500.0
+#define NBFM_DEVIATION_HZ 2500.0
+#define LOW_PASS_HZ 2880.0
 
 // ---------------------------------------------------------------------------
 //  Global Functions
@@ -278,6 +281,74 @@ public:
             return 0;
 
         m_manager->enqueueChannelRxSamples(m_modemId, in, static_cast<size_t>(noutput_items));
+        return noutput_items;
+    }
+
+private:
+    RadioManager* m_manager;
+    uint8_t m_modemId;
+};
+
+// ---------------------------------------------------------------------------
+//  Class Definition
+// ---------------------------------------------------------------------------
+
+/**
+ * @brief GNU Radio gate block that suppresses channel RF output while TX is inactive.
+ */
+class ModemTxGate final : public gr::sync_block {
+public:
+    using sptr = std::shared_ptr<ModemTxGate>;
+
+    /**
+     * @brief Factory method to create a new instance of the ModemTxGate block.
+     * @param manager Pointer to the RadioManager instance for checking channel TX active state.
+     * @param modemId Modem ID associated with this TX gate block.
+     * @return sptr Shared pointer to the created ModemTxGate instance.
+     */
+    static sptr make(RadioManager* manager, uint8_t modemId)
+    {
+        return std::make_shared<ModemTxGate>(manager, modemId);
+    }
+
+    /**
+     * @brief Initializes a new instance of the ModemTxGate class. Initializing the sync_block with appropriate input and output
+     * signatures. The block will output the input samples unchanged when the channel is active for transmission, and will output zeros when the channel is inactive.
+     * @param manager Pointer to the RadioManager instance for checking channel TX active state.
+     * @param modemId Modem ID associated with this TX gate block.
+     */
+    ModemTxGate(RadioManager* manager, uint8_t modemId) :
+        gr::sync_block("dvmbbsdr_modem_tx_gate",
+            gr::io_signature::make(1, 1, sizeof(gr_complex)),
+            gr::io_signature::make(1, 1, sizeof(gr_complex))),
+        m_manager(manager),
+        m_modemId(modemId)
+    {
+        /* stub */
+    }
+
+    /**
+     * @brief Overrides the work function of the sync_block to suppress channel RF output when TX is inactive. If the
+     * channel is active for transmission, outputs the input samples unchanged. If the channel is inactive, outputs zeros.
+     * @param noutput_items Number of input items (samples) received.
+     * @param input_items Vector of input buffers containing the samples to gate.
+     * @param output_items Vector of output buffers where the gated samples should be written.
+     * @return int Number of input items processed, which should be equal to noutput_items
+     */
+    int work(int noutput_items, gr_vector_const_void_star& input_items, gr_vector_void_star& output_items) override
+    {
+        const gr_complex* in = reinterpret_cast<const gr_complex*>(input_items[0]);
+        gr_complex* out = reinterpret_cast<gr_complex*>(output_items[0]);
+        if (in == nullptr || out == nullptr || noutput_items <= 0)
+            return 0;
+
+        const bool txActive = (m_manager != nullptr) && m_manager->isChannelTxActive(m_modemId);
+        if (!txActive) {
+            std::fill_n(out, static_cast<size_t>(noutput_items), gr_complex(0.0f, 0.0f));
+            return noutput_items;
+        }
+
+        std::copy_n(in, static_cast<size_t>(noutput_items), out);
         return noutput_items;
     }
 
@@ -798,6 +869,7 @@ void RadioManager::startRadios()
         RuntimeContext::DeviceRuntime runtime;
         runtime.tb = gr::make_top_block("dvmbbsdr-radio-device-" + std::to_string(i));
 
+        // do we have any RX channels? if so, create the source block and processing chain for each assigned channel
         if (hasRx) {
             runtime.source = osmosdr::source::make(dev.args);
             runtime.source->set_sample_rate(dev.sampleRate);
@@ -821,8 +893,8 @@ void RadioManager::startRadios()
             const unsigned decim = std::max(1U, asUnsignedRate(dev.sampleRate / CHANNELIZER_TARGET_RATE, 1U));
             const double chanRate = dev.sampleRate / static_cast<double>(decim);
 
-            const std::vector<float> xlateTaps = gr::filter::firdes::low_pass(1.0, dev.sampleRate, 12500.0,
-                2500.0, gr::fft::window::WIN_HAMMING);
+            const std::vector<float> xlateTaps = gr::filter::firdes::low_pass(1.0, dev.sampleRate, LOW_PASS_HZ,
+                LOW_PASS_HZ * 0.1, gr::fft::window::WIN_HAMMING);
 
             // for each assigned RX channel, create a chain of blocks to translate, demodulate, resample, and sink the 
             // samples to the modem processing queue
@@ -837,7 +909,7 @@ void RadioManager::startRadios()
                 auto xlate = gr::filter::freq_xlating_fir_filter_ccf::make(static_cast<int>(decim), xlateTaps,
                     offsetHz, dev.sampleRate);
 
-                const float demodGain = static_cast<float>(chanRate / (2.0 * M_PI * FM_DEVIATION_HZ));
+                const float demodGain = static_cast<float>(chanRate / (2.0 * M_PI * NBFM_DEVIATION_HZ));
                 auto demod = gr::analog::quadrature_demod_cf::make(demodGain);
 
                 const unsigned chanRateInt = asUnsignedRate(chanRate, 96000U);
@@ -867,6 +939,8 @@ void RadioManager::startRadios()
             }
         }
 
+        // do we have any TX channels? if so, create the sink block and processing chain for each assigned channel, 
+        // then combine the outputs to the SDR sink
         if (hasTx) {
             runtime.sink = osmosdr::sink::make(dev.args);
             runtime.sink->set_sample_rate(dev.sampleRate);
@@ -891,7 +965,8 @@ void RadioManager::startRadios()
 
                 auto txSrc = ModemTxSource::make(this, modemId);
                 auto s2f = gr::blocks::short_to_float::make(1U, 32768.0f);
-                auto fmMod = gr::analog::frequency_modulator_fc::make(static_cast<float>(safePhaseInc(FM_DEVIATION_HZ, MODEM_SAMPLE_RATE)));
+                //auto fmMod = gr::analog::frequency_modulator_fc::make(static_cast<float>(safePhaseInc(NBFM_DEVIATION_HZ, MODEM_SAMPLE_RATE)));
+                auto fmMod = gr::analog::frequency_modulator_fc::make(static_cast<float>(safePhaseInc(NBFM_BANDWIDTH_HZ, MODEM_SAMPLE_RATE) * 1.5f));
 
                 const unsigned deviceRateInt = asUnsignedRate(dev.sampleRate, 960000U);
                 const unsigned modemRateInt = static_cast<unsigned>(MODEM_SAMPLE_RATE);
@@ -901,11 +976,13 @@ void RadioManager::startRadios()
 
                 auto up = gr::filter::rational_resampler_ccf::make(interp, dec);
                 auto rot = gr::blocks::rotator_cc::make(safePhaseInc(offsetHz, dev.sampleRate));
+                auto txGate = ModemTxGate::make(this, modemId);
 
                 runtime.tb->connect(txSrc, 0, s2f, 0);
                 runtime.tb->connect(s2f, 0, fmMod, 0);
                 runtime.tb->connect(fmMod, 0, up, 0);
                 runtime.tb->connect(up, 0, rot, 0);
+                runtime.tb->connect(rot, 0, txGate, 0);
 
                 RuntimeContext::ChannelRuntime& chRuntime = runtime.channels[modemId];
                 chRuntime.txRotator = rot;
@@ -915,8 +992,9 @@ void RadioManager::startRadios()
                 runtime.keepAlive.push_back(fmMod);
                 runtime.keepAlive.push_back(up);
                 runtime.keepAlive.push_back(rot);
+                runtime.keepAlive.push_back(txGate);
 
-                carrierOutputs.push_back(rot);
+                carrierOutputs.push_back(txGate);
             }
 
             if (!carrierOutputs.empty()) {

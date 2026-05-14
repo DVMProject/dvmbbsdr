@@ -32,6 +32,7 @@ using namespace modem;
 #define RX_RF_IDLE_INTERVAL_MS 500U
 #define TX_FRAME_SAMPLES 720U      // 30 ms at 24 kHz modem sample rate
 #define TX_FRAME_SLEEP_US 30000U   // pace one TX frame in real
+#define TX_HANG_MS 250U            // hold TX across short producer gaps
 
 // Generated using rcosdesign(0.2, 8, 5, 'sqrt') in MATLAB
 static q15_t RRC_0_2_FILTER[] = {
@@ -130,8 +131,8 @@ IO::IO(modem::Modem* modem, bool debug) :
     m_threadStatus(),
     m_audioBufTx(),
     m_audioBufRx(),
+    m_txLastActivityMs(0U),
     m_abort(false),
-    m_rxRfActive(false),
     m_rxRfLastDataMs(0U),
     m_rxRfLastReportMs(0U),
     m_rxRfBytes(0U),
@@ -248,24 +249,36 @@ void IO::process()
         m_lockout = getCOSInt();
     }
 
-    // Switch off the transmitter only when there is no queued or staged TX data.
-    // The TX ring can be empty while interrupt() is still holding unsent staged samples.
-    bool hasPendingTx = false;
+    // Deassert TX based on the ring buffer being empty plus a hang guard.
+    // m_audioBufTx is an internal staging area and may hold a partial frame
+    // that can never reach TX_FRAME_SAMPLES once the host stops writing;
+    // using it to gate the deassert decision causes TX to stay active forever.
+    bool hasPendingTxRing = false;
     ::pthread_mutex_lock(&m_txLock);
-    if (m_txBuffer.getData() > 0U) {
-        hasPendingTx = true;
-    } else {
-        hasPendingTx = !m_audioBufTx.empty();
-    }
+    hasPendingTxRing = (m_txBuffer.getData() > 0U);
     ::pthread_mutex_unlock(&m_txLock);
 
-    if (!hasPendingTx && m_modem->m_tx) {
-        m_modem->m_tx = false;
-        m_modem->setModemTxActive(false);
+    if (m_modem->m_tx) {
+        if (!hasPendingTxRing) {
+            const uint64_t nowMs = monotonicMs();
+            const bool txHangExpired = (m_txLastActivityMs == 0U) || ((nowMs - m_txLastActivityMs) >= TX_HANG_MS);
 
-        if (m_debug)
-            ::LogDebugEx(LOG_SDR, "IO::process()", "no Tx data, TX OFF");
-        setPTTInt(m_pttInvert ? true : false);
+            if (txHangExpired) {
+                // flush any partial staging frame so txThreadHelper stops spinning.
+                ::pthread_mutex_lock(&m_txLock);
+                m_audioBufTx.clear();
+                ::pthread_mutex_unlock(&m_txLock);
+
+                m_modem->m_tx = false;
+                m_modem->setModemTxActive(false);
+
+                if (m_debug)
+                    ::LogDebugEx(LOG_SDR, "IO::process()", "no Tx data, TX OFF");
+                setPTTInt(m_pttInvert ? true : false);
+            }
+        }
+    } else {
+        m_modem->setModemTxActive(false);
     }
 
     if (m_rxBuffer.getData() >= RX_BLOCK_SIZE) {
@@ -439,6 +452,7 @@ void IO::write(DVM_STATE mode, q15_t* samples, uint16_t length, const uint8_t* c
     if (!m_modem->m_tx) {
         m_modem->m_tx = true;
         m_modem->setModemTxActive(true);
+        m_txLastActivityMs = monotonicMs();
 
         if (m_debug)
             ::LogDebugEx(LOG_SDR, "IO::write()", "TX ON, first sample written");
@@ -479,6 +493,8 @@ void IO::write(DVM_STATE mode, q15_t* samples, uint16_t length, const uint8_t* c
             m_txBuffer.put(res3, control[i]);
     }
     ::pthread_mutex_unlock(&m_txLock);
+
+    m_txLastActivityMs = monotonicMs();
 }
 
 /* Helper to get how much space the transmit ring buffer has for samples. */
@@ -534,6 +550,7 @@ void IO::setTransmit()
 
     m_modem->m_tx = true;
     m_modem->setModemTxActive(true);
+    m_txLastActivityMs = monotonicMs();
 
     if (m_debug)
         ::LogDebugEx(LOG_SDR, "IO::setTransmit()", "TX ON");
@@ -857,6 +874,17 @@ void IO::interrupt()
             ::pthread_mutex_lock(&m_txLock);
         }
     }
+/*
+    // Ring buffer is now empty. If a partial frame remains in the staging buffer,
+    // zero-pad it to TX_FRAME_SAMPLES and flush it so it is never left stranded.
+    // Silence padding produces a clean end-of-burst tail for the FM modulator chain.
+    if (!m_audioBufTx.empty()) {
+        m_audioBufTx.resize(TX_FRAME_SAMPLES, 0);
+        m_modem->transmitFMSamples(reinterpret_cast<const uint8_t*>(m_audioBufTx.data()),
+            TX_FRAME_SAMPLES * sizeof(short));
+        m_audioBufTx.clear();
+    }
+*/
     ::pthread_mutex_unlock(&m_txLock);
 
     sample = 0;
@@ -871,13 +899,12 @@ void* IO::txThreadHelper(void* arg)
 
     while (!p->m_abort)
     {
+        // Only gate on the ring buffer; m_audioBufTx is an internal staging area
+        // that may retain a partial frame after the host stops writing. Checking
+        // it here causes a busy-loop calling interrupt() with nothing to drain.
         bool hasPendingTx = false;
         ::pthread_mutex_lock(&p->m_txLock);
-        if (p->m_txBuffer.getData() > 0U) {
-            hasPendingTx = true;
-        } else {
-            hasPendingTx = !p->m_audioBufTx.empty();
-        }
+        hasPendingTx = (p->m_txBuffer.getData() > 0U);
         ::pthread_mutex_unlock(&p->m_txLock);
 
         if (!hasPendingTx) {
@@ -894,47 +921,22 @@ void* IO::txThreadHelper(void* arg)
 
 /*  */
 
-void IO::noteRxRfActivity(uint32_t bytes, bool iqMode)
+void IO::logRxRfSamples(uint32_t bytes, bool iqMode)
 {
     const uint64_t now = monotonicMs();
     m_rxRfLastDataMs = now;
     m_rxRfBytes += bytes;
     m_rxRfBursts++;
 
-    if (!m_rxRfActive) {
-        m_rxRfActive = true;
-        m_rxRfLastReportMs = now;
-        ::LogDebugEx(LOG_SDR, "IO::interruptRx()", "Modem %u (%s) RX ACTIVE (%s)",
-            m_modem->m_modemId, m_modem->m_modemPty.c_str(), iqMode ? "IQ" : "FM");
-        return;
-    }
-
     if ((now - m_rxRfLastReportMs) >= RX_RF_REPORT_INTERVAL_MS) {
         const unsigned long long elapsedMs = static_cast<unsigned long long>(now - m_rxRfLastReportMs);
-        ::LogDebugEx(LOG_SDR, "IO::interruptRx()", "Modem %u (%s) RX ACTIVE (%s), %u bytes in %u bursts over %llums",
+        ::LogDebugEx(LOG_SDR, "IO::interruptRx()", "Modem %u (%s) RX SAMPLES (%s), %u bytes in %u bursts over %llums",
             m_modem->m_modemId, m_modem->m_modemPty.c_str(), iqMode ? "IQ" : "FM", m_rxRfBytes, m_rxRfBursts, elapsedMs);
 
         m_rxRfBytes = 0U;
         m_rxRfBursts = 0U;
         m_rxRfLastReportMs = now;
     }
-}
-
-/*  */
-
-void IO::noteRxRfIdle()
-{
-    if (!m_rxRfActive)
-        return;
-
-    const uint64_t now = monotonicMs();
-    if ((now - m_rxRfLastDataMs) < RX_RF_IDLE_INTERVAL_MS)
-        return;
-
-    ::LogDebugEx(LOG_SDR, "IO::interruptRx()", "Modem %u (%s) RX IDLE", m_modem->m_modemId, m_modem->m_modemPty.c_str());
-    m_rxRfActive = false;
-    m_rxRfBytes = 0U;
-    m_rxRfBursts = 0U;
 }
 
 /*  */
@@ -947,15 +949,13 @@ void IO::interruptRx()
     uint8_t* samples = nullptr;
     int size = m_modem->readFMSamples(samples);
     if (size < 1 || samples == nullptr) {
-        if (m_debug)
-            noteRxRfIdle();
         return;
     }
 
     const uint8_t* sampleBytes = samples;
 
     if (m_debug)
-        noteRxRfActivity(static_cast<uint32_t>(size), false);
+        logRxRfSamples(static_cast<uint32_t>(size), false);
 
     ::pthread_mutex_lock(&m_rxLock);
 
