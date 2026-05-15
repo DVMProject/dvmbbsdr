@@ -21,7 +21,6 @@
 #include <gnuradio/top_block.h>
 
 #if defined(HAS_GNURADIO_ZEROMQ)
-#include <gnuradio/zeromq/pub_sink.h>
 #include <zmq.h>
 #endif
 
@@ -67,6 +66,11 @@ using namespace radio;
 
 #define CHANNEL_MARK_NONE 0x00U
 
+#define IQ_TAP_WIDEBAND_TOPIC "wb-iq"
+#define IQ_TAP_MODEM_TOPIC_PREFIX "modem-iq-"
+
+#define RADIO_STATUS_TOPIC_FIXED "radio-state"
+
 // ---------------------------------------------------------------------------
 //  Global Functions
 // ---------------------------------------------------------------------------
@@ -89,6 +93,127 @@ bool parseCanTx(const std::string& args)
 
     return true;
 }
+
+/**
+ * @brief Helper to generate a ZeroMQ topic string for modem IQ taps based on the modem ID. This function constructs a 
+ * topic string by concatenating a fixed prefix with the modem ID, which can be used for publishing IQ samples from 
+ * specific modem channels to a ZeroMQ PUB socket.
+ * @param modemId Modem ID for which to generate the topic string.
+ * @return std::string Generated ZeroMQ topic string for the specified modem ID.
+ */
+
+std::string modemIqTapTopic(uint8_t modemId)
+{
+    return std::string(IQ_TAP_MODEM_TOPIC_PREFIX) + std::to_string(static_cast<unsigned>(modemId));
+}
+
+#if defined(HAS_GNURADIO_ZEROMQ)
+std::mutex g_iqTapPubLock;
+void* g_iqTapPubContext = nullptr;
+void* g_iqTapPubSocket = nullptr;
+std::string g_iqTapPubAddress;
+
+/**
+ * @brief Helper to start the IQ tap publisher. This function initializes a ZeroMQ PUB socket bound to the specified address, 
+ * which can be used to publish IQ samples for monitoring or debugging purposes. If the publisher is already running with the 
+ * same address, it does nothing. If a different address is specified, it restarts the publisher with the new address.
+ * @param address ZeroMQ address to which the PUB socket should be bound (e.g., "tcp://127.0.0.1:5555").
+ * @return bool True if the publisher was started successfully or is already running with the specified address, false otherwise.
+ */
+bool startIqTapPublisher(const std::string& address)
+{
+    std::lock_guard<std::mutex> lock(g_iqTapPubLock);
+
+    if (address.empty())
+        return false;
+
+    if (g_iqTapPubSocket != nullptr && g_iqTapPubAddress == address)
+        return true;
+
+    if (g_iqTapPubSocket != nullptr) {
+        ::zmq_close(g_iqTapPubSocket);
+        g_iqTapPubSocket = nullptr;
+    }
+
+    if (g_iqTapPubContext != nullptr) {
+        ::zmq_ctx_term(g_iqTapPubContext);
+        g_iqTapPubContext = nullptr;
+    }
+
+    g_iqTapPubContext = ::zmq_ctx_new();
+    if (g_iqTapPubContext == nullptr)
+        return false;
+
+    g_iqTapPubSocket = ::zmq_socket(g_iqTapPubContext, ZMQ_PUB);
+    if (g_iqTapPubSocket == nullptr) {
+        ::zmq_ctx_term(g_iqTapPubContext);
+        g_iqTapPubContext = nullptr;
+        return false;
+    }
+
+    const int sndHwm = 16;
+    const int linger = 0;
+    (void)::zmq_setsockopt(g_iqTapPubSocket, ZMQ_SNDHWM, &sndHwm, sizeof(sndHwm));
+    (void)::zmq_setsockopt(g_iqTapPubSocket, ZMQ_LINGER, &linger, sizeof(linger));
+
+    if (::zmq_bind(g_iqTapPubSocket, address.c_str()) != 0) {
+        ::zmq_close(g_iqTapPubSocket);
+        g_iqTapPubSocket = nullptr;
+        ::zmq_ctx_term(g_iqTapPubContext);
+        g_iqTapPubContext = nullptr;
+        return false;
+    }
+
+    g_iqTapPubAddress = address;
+    return true;
+}
+
+/**
+ * @brief Helper to stop the IQ tap publisher. This function closes the ZeroMQ PUB socket and terminates the context, 
+ * effectively stopping the publisher and releasing all associated resources. It also clears the stored address to 
+ * indicate that the publisher is no longer running.
+ */
+void stopIqTapPublisher()
+{
+    std::lock_guard<std::mutex> lock(g_iqTapPubLock);
+
+    if (g_iqTapPubSocket != nullptr) {
+        ::zmq_close(g_iqTapPubSocket);
+        g_iqTapPubSocket = nullptr;
+    }
+
+    if (g_iqTapPubContext != nullptr) {
+        ::zmq_ctx_term(g_iqTapPubContext);
+        g_iqTapPubContext = nullptr;
+    }
+
+    g_iqTapPubAddress.clear();
+}
+
+/**
+ * @brief Helper to publish IQ samples to the IQ tap publisher. This function sends a multipart ZeroMQ message containing the topic and the IQ samples,
+ * allowing for real-time monitoring of the IQ data from the SDR. The first part of the message is the topic string, and the second part is the raw IQ sample data.
+ * The function checks if the publisher is running and if the input parameters are valid before attempting to send the message.
+ * @param topic ZeroMQ topic string to which the IQ samples should be published (e.g., "modem-iq-1").
+ * @param samples Buffer containing the complex IQ samples to publish.
+ * @param sampleCount Number of IQ samples in the buffer to publish.
+ */
+void publishIqTapSamples(const std::string& topic, const gr_complex* samples, size_t sampleCount)
+{
+    if (topic.empty() || samples == nullptr || sampleCount == 0U)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_iqTapPubLock);
+    if (g_iqTapPubSocket == nullptr)
+        return;
+
+    const int flags = ZMQ_DONTWAIT;
+    if (::zmq_send(g_iqTapPubSocket, topic.data(), topic.size(), ZMQ_SNDMORE | flags) < 0)
+        return;
+
+    (void)::zmq_send(g_iqTapPubSocket, samples, sampleCount * sizeof(gr_complex), flags);
+}
+#endif
 
 /**
  * @brief Safely computes a phase increment for a given frequency and sample rate, returning 0.0 for non-positive 
@@ -235,6 +360,52 @@ public:
 private:
     RadioManager* m_manager;
     uint8_t m_modemId;
+};
+
+// ---------------------------------------------------------------------------
+//  Class Definition
+// ---------------------------------------------------------------------------
+
+/**
+ * @brief GNU Radio passthrough block that publishes IQ samples to a fixed-topic
+ * ZeroMQ PUB socket while forwarding the stream unchanged.
+ */
+class IqTapPublisher final : public gr::sync_block {
+public:
+    using sptr = std::shared_ptr<IqTapPublisher>;
+
+    static sptr make(const std::string& topic)
+    {
+        return std::make_shared<IqTapPublisher>(topic);
+    }
+
+    IqTapPublisher(const std::string& topic) :
+        gr::sync_block("dvmbbsdr_iq_tap_pub",
+            gr::io_signature::make(1, 1, sizeof(gr_complex)),
+            gr::io_signature::make(1, 1, sizeof(gr_complex))),
+        m_topic(topic)
+    {
+        /* stub */
+    }
+
+    int work(int noutput_items, gr_vector_const_void_star& input_items, gr_vector_void_star& output_items) override
+    {
+        const gr_complex* in = reinterpret_cast<const gr_complex*>(input_items[0]);
+        gr_complex* out = reinterpret_cast<gr_complex*>(output_items[0]);
+        if (in == nullptr || out == nullptr || noutput_items <= 0)
+            return 0;
+
+        std::copy_n(in, static_cast<size_t>(noutput_items), out);
+
+#if defined(HAS_GNURADIO_ZEROMQ)
+        publishIqTapSamples(m_topic, in, static_cast<size_t>(noutput_items));
+#endif
+
+        return noutput_items;
+    }
+
+private:
+    std::string m_topic;
 };
 
 // ---------------------------------------------------------------------------
@@ -397,9 +568,6 @@ struct RadioManager::RuntimeContext {
         gr::top_block_sptr tb;
         osmosdr::source::sptr source;
         osmosdr::sink::sptr sink;
-#if defined(HAS_GNURADIO_ZEROMQ)
-        gr::zeromq::pub_sink::sptr iqTap;
-#endif
         std::unordered_map<uint8_t, ChannelRuntime> channels;
         std::vector<gr::basic_block_sptr> keepAlive;
         bool started;
@@ -443,7 +611,7 @@ bool RadioManager::initialize(yaml::Node& conf, bool debug)
 
     recomputeDeviceCenters();
     startRadios();
-    startRuntimeStatusPublisher();
+    startRadioStatusPublisher();
 
     m_initialized = true;
 
@@ -457,7 +625,7 @@ bool RadioManager::initialize(yaml::Node& conf, bool debug)
 
 void RadioManager::shutdown()
 {
-    stopRuntimeStatusPublisher();
+    stopRadioStatusPublisher();
 
     std::lock_guard<std::mutex> lock(m_lock);
 
@@ -465,8 +633,7 @@ void RadioManager::shutdown()
 
     m_channels.clear();
     m_devices.clear();
-    m_runtimeStatusPubAddress.clear();
-    m_runtimeStatusPubTopic.clear();
+    m_radioStatusPubAddress.clear();
     m_lastDiagnosticsLogMs = 0U;
     m_initialized = false;
 }
@@ -825,8 +992,7 @@ RadioManager::RadioManager() :
     m_debug(false),
     m_channels(),
     m_devices(),
-    m_runtimeStatusPubAddress(),
-    m_runtimeStatusPubTopic(),
+    m_radioStatusPubAddress(),
     m_statusThreadStop(true),
     m_statusThread(),
     m_runtime(nullptr),
@@ -921,10 +1087,8 @@ bool RadioManager::parseConfig(yaml::Node& conf)
     const std::string defaultRxAntenna = defaults["rxAntenna"].as<std::string>("");
     const std::string defaultTxAntenna = defaults["txAntenna"].as<std::string>("");
     const std::string defaultRxIqTapAddress = defaults["rxIqTapAddress"].as<std::string>("");
-    const std::string defaultRxIqTapTopic = defaults["rxIqTapTopic"].as<std::string>("");
 
-    m_runtimeStatusPubAddress = sdrConf["runtimeStatusPubAddress"].as<std::string>("");
-    m_runtimeStatusPubTopic = sdrConf["runtimeStatusPubTopic"].as<std::string>("");
+    m_radioStatusPubAddress = sdrConf["radioStatusPubAddress"].as<std::string>("");
 
     yaml::Node devicesNode = sdrConf["devices"];
     if (devicesNode.size() == 0U) {
@@ -939,7 +1103,6 @@ bool RadioManager::parseConfig(yaml::Node& conf)
         def.txAntenna = defaultTxAntenna;
         def.canTx = true;
         def.rxIqTapAddress = defaultRxIqTapAddress;
-        def.rxIqTapTopic = defaultRxIqTapTopic;
         def.rxCenter = 0U;
         def.txCenter = 0U;
         def.assignedRxChannels = 0U;
@@ -961,7 +1124,6 @@ bool RadioManager::parseConfig(yaml::Node& conf)
             state.txAntenna = dev["txAntenna"].as<std::string>(defaultTxAntenna);
             state.canTx = parseCanTx(state.args);
             state.rxIqTapAddress = dev["rxIqTapAddress"].as<std::string>(defaultRxIqTapAddress);
-            state.rxIqTapTopic = dev["rxIqTapTopic"].as<std::string>(defaultRxIqTapTopic);
             state.rxCenter = 0U;
             state.txCenter = 0U;
             state.assignedRxChannels = 0U;
@@ -1065,6 +1227,30 @@ void RadioManager::startRadios()
 
     m_runtime = std::make_unique<RuntimeContext>();
 
+    std::string iqTapAddress;
+    for (const DeviceState& dev : m_devices) {
+        if (!dev.rxIqTapAddress.empty()) {
+            iqTapAddress = dev.rxIqTapAddress;
+            break;
+        }
+    }
+
+#if defined(HAS_GNURADIO_ZEROMQ)
+    const bool iqTapEnabled = !iqTapAddress.empty() && startIqTapPublisher(iqTapAddress);
+    if (!iqTapAddress.empty() && !iqTapEnabled) {
+        ::LogWarning(LOG_SDR, "RadioManager RX IQ tap PUB bind failed for %s", iqTapAddress.c_str());
+    }
+    else if (iqTapEnabled) {
+        ::LogInfoEx(LOG_SDR, "RadioManager RX IQ tap PUB enabled (%s), topics = %s, %s<modemId>",
+            iqTapAddress.c_str(), IQ_TAP_WIDEBAND_TOPIC, IQ_TAP_MODEM_TOPIC_PREFIX);
+    }
+#else
+    const bool iqTapEnabled = false;
+    if (!iqTapAddress.empty()) {
+        ::LogWarning(LOG_SDR, "rxIqTapAddress is configured, but this build has no gnuradio-zeromq support");
+    }
+#endif
+
     std::unordered_map<size_t, std::vector<uint8_t>> rxAssignments;
     std::unordered_map<size_t, std::vector<uint8_t>> txAssignments;
 
@@ -1110,15 +1296,13 @@ void RadioManager::startRadios()
             if (dev.rxCenter > 0U)
                 runtime.source->set_center_freq(static_cast<double>(dev.rxCenter));
 
-#if defined(HAS_GNURADIO_ZEROMQ)
-            if (!dev.rxIqTapAddress.empty()) {
-                runtime.iqTap = gr::zeromq::pub_sink::make(sizeof(gr_complex), 1, const_cast<char*>(dev.rxIqTapAddress.c_str()), 
-                    100, false, 4, dev.rxIqTapTopic, true);
-                runtime.tb->connect(runtime.source, 0, runtime.iqTap, 0);
-                runtime.keepAlive.push_back(runtime.iqTap);
-                ::LogInfoEx(LOG_SDR, "SDR %zu RX IQ tap enabled (%s)", i, dev.rxIqTapAddress.c_str());
+            gr::basic_block_sptr rxStreamFanout = runtime.source;
+            if (iqTapEnabled) {
+                auto widebandTap = IqTapPublisher::make(IQ_TAP_WIDEBAND_TOPIC);
+                runtime.tb->connect(runtime.source, 0, widebandTap, 0);
+                runtime.keepAlive.push_back(widebandTap);
+                rxStreamFanout = widebandTap;
             }
-#endif
 
             const unsigned decim = std::max(1U, asUnsignedRate(dev.sampleRate / CHANNELIZER_TARGET_RATE, 1U));
             const double chanRate = dev.sampleRate / static_cast<double>(decim);
@@ -1152,9 +1336,18 @@ void RadioManager::startRadios()
                 auto resamp = gr::filter::rational_resampler_ccf::make(interp, dec);
                 auto rxSink = ModemRxIqSink::make(this, modemId);
 
-                runtime.tb->connect(runtime.source, 0, xlate, 0);
+                runtime.tb->connect(rxStreamFanout, 0, xlate, 0);
                 runtime.tb->connect(xlate, 0, resamp, 0);
-                runtime.tb->connect(resamp, 0, rxSink, 0);
+
+                gr::basic_block_sptr rxChannelOut = resamp;
+                if (iqTapEnabled) {
+                    auto modemTap = IqTapPublisher::make(modemIqTapTopic(modemId));
+                    runtime.tb->connect(resamp, 0, modemTap, 0);
+                    runtime.keepAlive.push_back(modemTap);
+                    rxChannelOut = modemTap;
+                }
+
+                runtime.tb->connect(rxChannelOut, 0, rxSink, 0);
 
                 RuntimeContext::ChannelRuntime chRuntime;
                 chRuntime.rxXlate = xlate;
@@ -1305,14 +1498,15 @@ void RadioManager::stopRadios()
         dev.channels.clear();
         dev.source.reset();
         dev.sink.reset();
-#if defined(HAS_GNURADIO_ZEROMQ)
-        dev.iqTap.reset();
-#endif
         dev.tb.reset();
     }
 
     m_runtime->devices.clear();
     m_runtime.reset();
+
+    #if defined(HAS_GNURADIO_ZEROMQ)
+        stopIqTapPublisher();
+    #endif
 }
 
 /* Helper to apply retuning of the SDR devices based on any changes to the channel frequencies. */
@@ -1363,14 +1557,14 @@ void RadioManager::applyRetune()
     }
 }
 
-/* Helper to start the runtime status publisher thread.*/
+/* Helper to start the radio status publisher thread.*/
 
-void RadioManager::startRuntimeStatusPublisher()
+void RadioManager::startRadioStatusPublisher()
 {
     m_statusThreadStop = false;
 
 #if defined(HAS_GNURADIO_ZEROMQ)
-    if (!m_runtimeStatusPubAddress.empty()) {
+    if (!m_radioStatusPubAddress.empty()) {
         m_zmqContext = ::zmq_ctx_new();
         if (m_zmqContext != nullptr) {
             m_zmqPubSocket = ::zmq_socket(m_zmqContext, ZMQ_PUB);
@@ -1380,13 +1574,13 @@ void RadioManager::startRuntimeStatusPublisher()
                 (void)::zmq_setsockopt(m_zmqPubSocket, ZMQ_SNDHWM, &sndHwm, sizeof(sndHwm));
                 (void)::zmq_setsockopt(m_zmqPubSocket, ZMQ_LINGER, &linger, sizeof(linger));
 
-                if (::zmq_bind(m_zmqPubSocket, m_runtimeStatusPubAddress.c_str()) != 0) {
-                    ::LogWarning(LOG_SDR, "RadioManager runtime status PUB bind failed for %s", m_runtimeStatusPubAddress.c_str());
+                if (::zmq_bind(m_zmqPubSocket, m_radioStatusPubAddress.c_str()) != 0) {
+                    ::LogWarning(LOG_SDR, "RadioManager radio status PUB bind failed for %s", m_radioStatusPubAddress.c_str());
                     ::zmq_close(m_zmqPubSocket);
                     m_zmqPubSocket = nullptr;
                 }
                 else {
-                    ::LogInfoEx(LOG_SDR, "RadioManager runtime status PUB enabled (%s)", m_runtimeStatusPubAddress.c_str());
+                    ::LogInfoEx(LOG_SDR, "RadioManager radio status PUB enabled (%s)", m_radioStatusPubAddress.c_str());
                 }
             }
         }
@@ -1397,22 +1591,22 @@ void RadioManager::startRuntimeStatusPublisher()
         }
     }
 #else
-    if (!m_runtimeStatusPubAddress.empty()) {
-        ::LogWarning(LOG_SDR, "runtimeStatusPubAddress is configured, but this build has no gnuradio-zeromq support");
+    if (!m_radioStatusPubAddress.empty()) {
+        ::LogWarning(LOG_SDR, "radioStatusPubAddress is configured, but this build has no gnuradio-zeromq support");
     }
 #endif
 
     m_statusThread = std::thread([this]() {
         while (!m_statusThreadStop.load()) {
-            publishRuntimeStatus();
+            publishRadioStatus();
             std::this_thread::sleep_for(std::chrono::milliseconds(STATUS_PUBLISH_INTERVAL_MS));
         }
     });
 }
 
-/* Helper to stop the runtime status publisher thread. */
+/* Helper to stop the radio status publisher thread. */
 
-void RadioManager::stopRuntimeStatusPublisher()
+void RadioManager::stopRadioStatusPublisher()
 {
     m_statusThreadStop = true;
 
@@ -1432,24 +1626,22 @@ void RadioManager::stopRuntimeStatusPublisher()
 #endif
 }
 
-/* Helper to publish the runtime status of the RadioManager. */
+/* Helper to publish the radio status of the RadioManager. */
 
-void RadioManager::publishRuntimeStatus()
+void RadioManager::publishRadioStatus()
 {
     std::string payload;
 
     {
         std::lock_guard<std::mutex> lock(m_lock);
-        logRuntimeDiagnostics(monotonicMs());
-        payload = buildRuntimeStatusJson();
+        logRadioDiagnostics(monotonicMs());
+        payload = buildRadioStatusJson();
     }
 
 #if defined(HAS_GNURADIO_ZEROMQ)
     if (m_zmqPubSocket != nullptr) {
-        if (!m_runtimeStatusPubTopic.empty()) {
-            (void)::zmq_send(m_zmqPubSocket, m_runtimeStatusPubTopic.data(), m_runtimeStatusPubTopic.size(), ZMQ_SNDMORE);
-        }
-
+        std::string statusPubTopic = RADIO_STATUS_TOPIC_FIXED;
+        (void)::zmq_send(m_zmqPubSocket, statusPubTopic.data(), statusPubTopic.size(), ZMQ_SNDMORE);
         (void)::zmq_send(m_zmqPubSocket, payload.data(), payload.size(), 0);
     }
 #else
@@ -1457,9 +1649,9 @@ void RadioManager::publishRuntimeStatus()
 #endif
 }
 
-/* Helper to build a JSON string representing the current runtime status of the RadioManager. */
+/* Helper to build a JSON string representing the current radio status of the RadioManager. */
 
-std::string RadioManager::buildRuntimeStatusJson() const
+std::string RadioManager::buildRadioStatusJson() const
 {
     /*
     ** bryanb: we're doing this by hand instead of via json.h because its faster -- if not more dirty
@@ -1527,9 +1719,9 @@ std::string RadioManager::buildRuntimeStatusJson() const
     return ss.str();
 }
 
-/* Helper to log runtime diagnostics at regular intervals. */
+/* Helper to log radio diagnostics at regular intervals. */
 
-void RadioManager::logRuntimeDiagnostics(uint64_t nowMs)
+void RadioManager::logRadioDiagnostics(uint64_t nowMs)
 {
     if (!m_debug)
         return;

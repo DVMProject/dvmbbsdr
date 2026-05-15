@@ -19,6 +19,7 @@ import argparse
 import json
 import signal
 import sys
+from typing import Dict, List
 
 try:
     import zmq
@@ -35,26 +36,29 @@ from PyQt5 import QtWidgets
 from PyQt5 import sip
 
 
-class ZmqFftViewer(gr.top_block, Qt.QWidget):
+# Fixed, tool-controlled topics used by this viewer.
+IQ_WIDEBAND_TOPIC = "wb-iq"
+IQ_MODEM_TOPIC_PREFIX = "modem-iq-"
+RADIO_STATUS_TOPIC = "radio-state"
+
+
+def modem_iq_topic(modem_id: int) -> str:
+    return f"{IQ_MODEM_TOPIC_PREFIX}{modem_id}"
+
+
+class FftTabPane(Qt.QWidget):
     def __init__(
         self,
         address: str,
-        sample_rate: float,
-        center_freq: float,
-        fft_size: int,
-        update_time: float,
         topic: str,
+        fft_size: int,
+        center_freq: float,
+        sample_rate: float,
+        update_time: float,
+        line_label: str,
         title: str,
-        runtime_status_zmq_address: str,
-        runtime_status_zmq_topic: str,
-        device_index: int,
-        poll_ms: int,
     ):
-        gr.top_block.__init__(self, title)
-        Qt.QWidget.__init__(self)
-
-        self.setWindowTitle(title)
-        qtgui_util.check_set_qss()
+        super().__init__()
 
         layout = Qt.QVBoxLayout()
         self.setLayout(layout)
@@ -74,7 +78,7 @@ class ZmqFftViewer(gr.top_block, Qt.QWidget):
             fft.window.WIN_BLACKMAN_HARRIS,
             center_freq,
             sample_rate,
-            "RX IQ FFT",
+            title,
             1,
             None,
         )
@@ -86,31 +90,7 @@ class ZmqFftViewer(gr.top_block, Qt.QWidget):
         self._fft.enable_axis_labels(True)
         if hasattr(self._fft, "set_plot_pos_half"):
             self._fft.set_plot_pos_half(False)
-        self._fft.set_line_label(0, "RX IQ")
-
-        self._runtime_status_zmq_address = runtime_status_zmq_address
-        self._runtime_status_zmq_topic = runtime_status_zmq_topic
-        self._device_index = device_index
-        self._last_runtime_signature = None
-        self._status_zmq_ctx = None
-        self._status_zmq_sock = None
-
-        if self._runtime_status_zmq_address and zmq is not None:
-            try:
-                self._status_zmq_ctx = zmq.Context.instance()
-                self._status_zmq_sock = self._status_zmq_ctx.socket(zmq.SUB)
-                if self._runtime_status_zmq_topic:
-                    self._status_zmq_sock.setsockopt(zmq.SUBSCRIBE, self._runtime_status_zmq_topic.encode("utf-8"))
-                else:
-                    self._status_zmq_sock.setsockopt(zmq.SUBSCRIBE, b"")
-                self._status_zmq_sock.connect(self._runtime_status_zmq_address)
-            except Exception:
-                self._status_zmq_sock = None
-        elif self._runtime_status_zmq_address and zmq is None:
-            raise RuntimeError("pyzmq is required for --runtime-status-zmq-address")
-
-        # Ensure initial axis setup is explicit and can be updated later.
-        self._set_frequency_range(center_freq, sample_rate)
+        self._fft.set_line_label(0, line_label)
 
         # GNU Radio Qt widgets expose qwidget() on recent versions.
         # Keep a fallback for bindings that still expose pyqwidget().
@@ -122,7 +102,89 @@ class ZmqFftViewer(gr.top_block, Qt.QWidget):
         fft_widget = sip_wrap(raw_widget)
         layout.addWidget(fft_widget)
 
-        self.connect((self._src, 0), (self._fft, 0))
+        self._tb = gr.top_block(f"dvmbbsdr-fft-tab-{line_label}")
+        self._tb.connect((self._src, 0), (self._fft, 0))
+
+    def start(self):
+        self._tb.start()
+
+    def stop(self):
+        self._tb.stop()
+        self._tb.wait()
+
+    def set_frequency_range(self, center_freq: float, sample_rate: float):
+        if sample_rate <= 0:
+            return
+        if hasattr(self._fft, "set_frequency_range"):
+            self._fft.set_frequency_range(center_freq, sample_rate)
+
+
+class ZmqFftViewer(Qt.QWidget):
+    def __init__(
+        self,
+        address: str,
+        sample_rate: float,
+        center_freq: float,
+        fft_size: int,
+        update_time: float,
+        title: str,
+        runtime_status_zmq_address: str,
+        device_index: int,
+        poll_ms: int,
+    ):
+        Qt.QWidget.__init__(self)
+
+        self.setWindowTitle(title)
+        qtgui_util.check_set_qss()
+
+        layout = Qt.QVBoxLayout()
+        self.setLayout(layout)
+
+        self._tabs = Qt.QTabWidget(self)
+        layout.addWidget(self._tabs)
+
+        self._iq_address = address
+        self._fft_size = fft_size
+        self._update_time = update_time
+
+        self._wideband_tab = FftTabPane(
+            address=address,
+            topic=IQ_WIDEBAND_TOPIC,
+            fft_size=fft_size,
+            center_freq=center_freq,
+            sample_rate=sample_rate,
+            update_time=update_time,
+            line_label="RX Wideband IQ",
+            title="Wideband RX IQ FFT",
+        )
+        self._tabs.addTab(self._wideband_tab, "Wideband")
+
+        self._channel_tabs: Dict[int, FftTabPane] = {}
+
+        self._runtime_status_zmq_address = runtime_status_zmq_address
+        self._device_index = device_index
+        self._last_runtime_signature = None
+        self._status_zmq_ctx = None
+        self._status_zmq_sock = None
+
+        self._current_center_freq = center_freq
+        self._current_sample_rate = sample_rate
+
+        if self._runtime_status_zmq_address and zmq is not None:
+            try:
+                self._status_zmq_ctx = zmq.Context.instance()
+                self._status_zmq_sock = self._status_zmq_ctx.socket(zmq.SUB)
+                # Subscribe broadly and validate topic frame in software so we
+                # can consume both legacy unframed JSON and topic-framed payloads.
+                self._status_zmq_sock.setsockopt(zmq.SUBSCRIBE, b"")
+                self._status_zmq_sock.connect(self._runtime_status_zmq_address)
+            except Exception:
+                self._status_zmq_sock = None
+        elif self._runtime_status_zmq_address and zmq is None:
+            raise RuntimeError("pyzmq is required for --runtime-status-zmq-address")
+
+        # Ensure initial axis setup is explicit and can be updated later.
+        self._set_frequency_range(center_freq, sample_rate)
 
         self._runtime_timer = None
         if self._status_zmq_sock is not None:
@@ -135,8 +197,47 @@ class ZmqFftViewer(gr.top_block, Qt.QWidget):
     def _set_frequency_range(self, center_freq: float, sample_rate: float):
         if sample_rate <= 0:
             return
-        if hasattr(self._fft, "set_frequency_range"):
-            self._fft.set_frequency_range(center_freq, sample_rate)
+
+        self._current_center_freq = center_freq
+        self._current_sample_rate = sample_rate
+        self._wideband_tab.set_frequency_range(center_freq, sample_rate)
+
+        for tab in self._channel_tabs.values():
+            tab.set_frequency_range(center_freq, sample_rate)
+
+    def _ensure_channel_tabs(self, modem_ids: List[int]):
+        wanted = set(modem_ids)
+
+        # Remove tabs for channels that are no longer present.
+        for modem_id in list(self._channel_tabs.keys()):
+            if modem_id in wanted:
+                continue
+
+            pane = self._channel_tabs.pop(modem_id)
+            idx = self._tabs.indexOf(pane)
+            if idx >= 0:
+                self._tabs.removeTab(idx)
+            pane.stop()
+            pane.deleteLater()
+
+        # Create tabs for new channels.
+        for modem_id in sorted(wanted):
+            if modem_id in self._channel_tabs:
+                continue
+
+            pane = FftTabPane(
+                address=self._iq_address,
+                topic=modem_iq_topic(modem_id),
+                fft_size=self._fft_size,
+                center_freq=self._current_center_freq,
+                sample_rate=self._current_sample_rate,
+                update_time=self._update_time,
+                line_label=f"Modem {modem_id} IQ",
+                title=f"Modem {modem_id} FFT",
+            )
+            pane.start()
+            self._channel_tabs[modem_id] = pane
+            self._tabs.addTab(pane, f"Modem {modem_id}")
 
     def _refresh_runtime_status(self):
         self._refresh_runtime_status_zmq()
@@ -159,6 +260,10 @@ class ZmqFftViewer(gr.top_block, Qt.QWidget):
             if len(parts) == 1:
                 payload = parts[0]
             else:
+                # Ignore unrelated topic-framed messages on the same socket.
+                topic = parts[0].decode("utf-8", errors="ignore")
+                if topic and topic != RADIO_STATUS_TOPIC:
+                    continue
                 payload = parts[-1]
 
             try:
@@ -169,6 +274,18 @@ class ZmqFftViewer(gr.top_block, Qt.QWidget):
             devices = status.get("devices", [])
             if not isinstance(devices, list):
                 continue
+
+            channels = status.get("channels", [])
+            modem_ids = []
+            if isinstance(channels, list):
+                for ch in channels:
+                    if not isinstance(ch, dict):
+                        continue
+                    try:
+                        modem_ids.append(int(ch.get("modemId", -1)))
+                    except (TypeError, ValueError):
+                        continue
+            self._ensure_channel_tabs([m for m in modem_ids if m > 0])
 
             selected = None
             for dev in devices:
@@ -192,6 +309,14 @@ class ZmqFftViewer(gr.top_block, Qt.QWidget):
             self._set_frequency_range(center, sample_rate)
             self._last_runtime_signature = signature
 
+    def start(self):
+        self._wideband_tab.start()
+
+    def stop(self):
+        self._wideband_tab.stop()
+        for pane in list(self._channel_tabs.values()):
+            pane.stop()
+
 
 def sip_wrap(widget):
     # Some GNU Radio builds return an already-wrapped QWidget from qwidget().
@@ -204,17 +329,12 @@ def sip_wrap(widget):
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Subscribe to dvmbbsdr RX IQ ZeroMQ stream and show live FFT"
+        description="Subscribe to fixed dvmbbsdr ZeroMQ topics and show tabbed live FFT"
     )
     parser.add_argument(
         "--address",
         default="tcp://127.0.0.1:5557",
-        help="ZeroMQ SUB address to connect (default: tcp://127.0.0.1:5557)",
-    )
-    parser.add_argument(
-        "--topic",
-        default="",
-        help="PUB/SUB topic filter (must match rxIqTapTopic if set)",
+        help="ZeroMQ SUB address to connect for IQ streams (default: tcp://127.0.0.1:5557)",
     )
     parser.add_argument(
         "--sample-rate",
@@ -248,12 +368,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--runtime-status-zmq-address",
         default="tcp://127.0.0.1:5567",
-        help="Optional RadioManager runtime status ZMQ PUB address for dynamic center/sample-rate updates (tcp://127.0.0.1:5567)",
-    )
-    parser.add_argument(
-        "--runtime-status-zmq-topic",
-        default="radio-state",
-        help="Optional RadioManager runtime status ZMQ topic filter (default: radio-state)",
+        help="Optional RadioManager runtime status ZMQ PUB address (default: tcp://127.0.0.1:5567)",
     )
     parser.add_argument(
         "--device-index",
@@ -281,10 +396,8 @@ def main() -> int:
         center_freq=args.center_freq,
         fft_size=args.fft_size,
         update_time=args.update_time,
-        topic=args.topic,
         title=args.title,
         runtime_status_zmq_address=args.runtime_status_zmq_address,
-        runtime_status_zmq_topic=args.runtime_status_zmq_topic,
         device_index=args.device_index,
         poll_ms=args.poll_ms,
     )
@@ -305,7 +418,6 @@ def main() -> int:
             except Exception:
                 pass
         tb.stop()
-        tb.wait()
         app.quit()
 
     signal.signal(signal.SIGINT, _shutdown)

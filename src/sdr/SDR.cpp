@@ -212,7 +212,7 @@ bool SDR::readParams()
 
 #if defined(HAS_GNURADIO_ZEROMQ)
     std::string rxIqTapAddress = sdrDefaults["rxIqTapAddress"].as<std::string>("");
-    std::string rxIqTapTopic = sdrDefaults["rxIqTapTopic"].as<std::string>("");
+    std::string runtimeStatusPubAddress = sdrConf["runtimeStatusPubAddress"].as<std::string>("");
 #else
     if (!sdrDefaults["rxIqTapAddress"].isNone()) {
         ::LogWarning(LOG_SDR, "SDR defaults define rxIqTapAddress, but this build has no gnuradio-zeromq support");
@@ -224,10 +224,17 @@ bool SDR::readParams()
     LogInfo("    TX Gain: %f", defaultTxGain);
     LogInfo("    Frequency Correction PPM: %f", defaultFreqCorrPpm);
 
+#if defined(HAS_GNURADIO_ZEROMQ)
     if (!rxIqTapAddress.empty()) {
         LogInfo("    RX IQ Tap Address: %s", rxIqTapAddress.c_str());
-        LogInfo("    RX IQ Tap Topic: %s", rxIqTapTopic.c_str());
+        LogInfo("    RX IQ Tap Topics (fixed): wb-iq, modem-iq-<modemId>");
     }
+
+    if (!runtimeStatusPubAddress.empty()) {
+        LogInfo("    Runtime Status PUB Address: %s", runtimeStatusPubAddress.c_str());
+        LogInfo("    Runtime Status PUB Topic (fixed): radio-state");
+    }
+#endif
 
     LogInfo("SDR Device Parameters");
 
@@ -247,7 +254,6 @@ bool SDR::readParams()
             std::string txAntenna = dev["txAntenna"].as<std::string>("");
 #if defined(HAS_GNURADIO_ZEROMQ)
             std::string rxIqTapAddress = dev["rxIqTapAddress"].as<std::string>("");
-            std::string rxIqTapTopic = dev["rxIqTapTopic"].as<std::string>("");
 #else
             if (!dev["rxIqTapAddress"].isNone()) {
                 ::LogWarning(LOG_SDR, "SDR %zu defines rxIqTapAddress, but this build has no gnuradio-zeromq support", i);
@@ -263,7 +269,7 @@ bool SDR::readParams()
             LogInfo("        TX Antenna: %s", txAntenna.empty() ? "default" : txAntenna.c_str());
             if (!rxIqTapAddress.empty()) {
                 LogInfo("        RX IQ Tap Address: %s", rxIqTapAddress.c_str());
-                LogInfo("        RX IQ Tap Topic: %s", rxIqTapTopic.c_str());
+                LogInfo("        RX IQ Tap Topics (fixed): wb-iq, modem-iq-<modemId>");
             }
         }
     }

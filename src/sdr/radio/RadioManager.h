@@ -177,7 +177,6 @@ namespace radio
             bool canTx;
 
             std::string rxIqTapAddress;
-            std::string rxIqTapTopic;
 
             uint32_t rxCenter;
             uint32_t txCenter;
@@ -301,41 +300,41 @@ namespace radio
         void applyRetune();
 
         /**
-         * @brief Helper to start the runtime status publisher thread. This method initializes and starts a background thread that periodically
-         * publishes the runtime status of the RadioManager, including information about the devices, channels, and any 
+         * @brief Helper to start the radio status publisher thread. This method initializes and starts a background thread that periodically
+         * publishes the radio status of the RadioManager, including information about the devices, channels, and any 
          * diagnostics. The status is published to a configured address and topic, allowing for external monitoring of
          * the RadioManager's state.
          */
-        void startRuntimeStatusPublisher();
+        void startRadioStatusPublisher();
         /**
-         * @brief Helper to stop the runtime status publisher thread. This method signals the background thread responsible for publishing runtime status to stop,
+         * @brief Helper to stop the radio status publisher thread. This method signals the background thread responsible for publishing radio status to stop,
          * and waits for the thread to finish before returning. This ensures a clean shutdown of the status publisher
          * thread and prevents any potential issues with dangling threads or resources.
          */
-        void stopRuntimeStatusPublisher();
+        void stopRadioStatusPublisher();
         /**
-         * @brief Helper to publish the runtime status of the RadioManager. This method gathers information about the current
+         * @brief Helper to publish the radio status of the RadioManager. This method gathers information about the current
          * state of the devices, channels, and any diagnostics, and publishes this information to the configured address 
          * and topic. This allows for external monitoring of the RadioManager's state and can be useful for debugging 
          * and performance monitoring.
          */
-        void publishRuntimeStatus();
+        void publishRadioStatus();
         /**
-         * @brief Helper to build a JSON string representing the current runtime status of the RadioManager. This method collects
+         * @brief Helper to build a JSON string representing the current radio status of the RadioManager. This method collects
          * information about the devices, channels, and diagnostics, and formats it into a JSON string that can be published
          * to the status topic. The JSON includes details such as device configurations, channel assignments, sample queue lengths, and any relevant diagnostics.
-         * @returns std::string JSON string representing the current runtime status of the RadioManager.
+         * @returns std::string JSON string representing the current radio status of the RadioManager.
          */
-        std::string buildRuntimeStatusJson() const;
+        std::string buildRadioStatusJson() const;
 
         /**
-         * @brief Helper to log runtime diagnostics at regular intervals. This method checks if a certain amount of time has passed since the last diagnostics log,
+         * @brief Helper to log radio diagnostics at regular intervals. This method checks if a certain amount of time has passed since the last diagnostics log,
          * and if so, it gathers diagnostic information about the devices and channels and logs it. This can include 
          * information such as sample queue lengths, dropped samples, and any errors or warnings. Regular logging of 
          * diagnostics can help identify performance issues or bottlenecks in the SDR operation.
          * @param nowMs Current time in milliseconds, used to determine if it's time to log diagnostics.
          */
-        void logRuntimeDiagnostics(uint64_t nowMs);
+        void logRadioDiagnostics(uint64_t nowMs);
 
         struct RuntimeContext;
 
@@ -346,8 +345,7 @@ namespace radio
         std::unordered_map<uint8_t, ChannelState> m_channels;
         std::vector<DeviceState> m_devices;
 
-        std::string m_runtimeStatusPubAddress;
-        std::string m_runtimeStatusPubTopic;
+        std::string m_radioStatusPubAddress;
 
         std::atomic<bool> m_statusThreadStop;
         std::thread m_statusThread;

@@ -74,8 +74,7 @@ sdr:
         # Empty string disables export.
         # Example: "tcp://127.0.0.1:5557"
         #rxIqTapAddress: "tcp://127.0.0.1:5557"
-        # Optional PUB topic prefix. Leave empty to publish without topic framing.
-        #rxIqTapTopic: ""
+        # Topics are fixed when enabled: `wb-iq` and `modem-iq-<modemId>`.
 
     # Wideband channelization and transmission settings.
     # Rebuild-free hot retune is used when only channel frequencies change.
@@ -103,7 +102,6 @@ sdr:
 
           # Optional per-device override for RX IQ ZeroMQ export tap.
           #rxIqTapAddress: "tcp://127.0.0.1:5557"
-          #rxIqTapTopic: "sdr0"
 
         # Device 1: USRP (TX+RX capable)
         - args: "driver=uhd,addr=192.168.10.2"
@@ -128,12 +126,11 @@ sdr:
 
           # Optional per-device override for RX IQ ZeroMQ export tap.
           #rxIqTapAddress: "tcp://127.0.0.1:5558"
-          #rxIqTapTopic: "sdr1"
 
     # Optional runtime status publisher for live SDR center/sample-rate updates over ZeroMQ.
     # This avoids filesystem polling and is preferred for dynamic retune visualization.
-    #runtimeStatusPubAddress: "tcp://127.0.0.1:5567"
-    #runtimeStatusPubTopic: "radio-state"
+    #radioStatusPubAddress: "tcp://127.0.0.1:5567"
+    # Topic is fixed when enabled: `radio-state`.
 
 #
 # Virtual Modem Configuration
