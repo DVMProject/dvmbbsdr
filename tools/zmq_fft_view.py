@@ -35,12 +35,11 @@ from PyQt5 import Qt
 from PyQt5 import QtWidgets
 from PyQt5 import sip
 
-
 # Fixed, tool-controlled topics used by this viewer.
 IQ_WIDEBAND_TOPIC = "wb-iq"
 IQ_MODEM_TOPIC_PREFIX = "modem-iq-"
 RADIO_STATUS_TOPIC = "radio-state"
-
+DEFAULT_MODEM_SLICE_SAMPLE_RATE = 24000.0
 
 def modem_iq_topic(modem_id: int) -> str:
     return f"{IQ_MODEM_TOPIC_PREFIX}{modem_id}"
@@ -63,25 +62,10 @@ class FftTabPane(Qt.QWidget):
         layout = Qt.QVBoxLayout()
         self.setLayout(layout)
 
-        self._src = zeromq.sub_source(
-            gr.sizeof_gr_complex,
-            1,
-            address,
-            100,
-            False,
-            -1,
-            topic,
-        )
+        self._src = zeromq.sub_source(gr.sizeof_gr_complex, 1, address, 100, False, -1, topic,)
 
-        self._fft = qtgui.freq_sink_c(
-            fft_size,
-            fft.window.WIN_BLACKMAN_HARRIS,
-            center_freq,
-            sample_rate,
-            title,
-            1,
-            None,
-        )
+        self._fft = qtgui.freq_sink_c(fft_size, fft.window.WIN_BLACKMAN_HARRIS, center_freq,
+            sample_rate, title, 1, None,)
         self._fft.set_update_time(update_time)
         self._fft.set_y_axis(-140, 10)
         self._fft.set_y_label("Relative Gain", "dB")
@@ -147,16 +131,8 @@ class ZmqFftViewer(Qt.QWidget):
         self._fft_size = fft_size
         self._update_time = update_time
 
-        self._wideband_tab = FftTabPane(
-            address=address,
-            topic=IQ_WIDEBAND_TOPIC,
-            fft_size=fft_size,
-            center_freq=center_freq,
-            sample_rate=sample_rate,
-            update_time=update_time,
-            line_label="RX Wideband IQ",
-            title="Wideband RX IQ FFT",
-        )
+        self._wideband_tab = FftTabPane(address=address, topic=IQ_WIDEBAND_TOPIC, fft_size=fft_size, center_freq=center_freq,
+            sample_rate=sample_rate, update_time=update_time, line_label="RX Wideband IQ", title="Wideband RX IQ FFT",)
         self._tabs.addTab(self._wideband_tab, "Wideband")
 
         self._channel_tabs: Dict[int, FftTabPane] = {}
@@ -184,7 +160,7 @@ class ZmqFftViewer(Qt.QWidget):
             raise RuntimeError("pyzmq is required for --runtime-status-zmq-address")
 
         # Ensure initial axis setup is explicit and can be updated later.
-        self._set_frequency_range(center_freq, sample_rate)
+        self._set_wideband_frequency_range(center_freq, sample_rate)
 
         self._runtime_timer = None
         if self._status_zmq_sock is not None:
@@ -194,16 +170,13 @@ class ZmqFftViewer(Qt.QWidget):
             self._runtime_timer.start()
             self._refresh_runtime_status()
 
-    def _set_frequency_range(self, center_freq: float, sample_rate: float):
+    def _set_wideband_frequency_range(self, center_freq: float, sample_rate: float):
         if sample_rate <= 0:
             return
 
         self._current_center_freq = center_freq
         self._current_sample_rate = sample_rate
         self._wideband_tab.set_frequency_range(center_freq, sample_rate)
-
-        for tab in self._channel_tabs.values():
-            tab.set_frequency_range(center_freq, sample_rate)
 
     def _ensure_channel_tabs(self, modem_ids: List[int]):
         wanted = set(modem_ids)
@@ -225,19 +198,36 @@ class ZmqFftViewer(Qt.QWidget):
             if modem_id in self._channel_tabs:
                 continue
 
-            pane = FftTabPane(
-                address=self._iq_address,
-                topic=modem_iq_topic(modem_id),
-                fft_size=self._fft_size,
-                center_freq=self._current_center_freq,
-                sample_rate=self._current_sample_rate,
-                update_time=self._update_time,
-                line_label=f"Modem {modem_id} IQ",
-                title=f"Modem {modem_id} FFT",
-            )
+            pane = FftTabPane(address=self._iq_address, topic=modem_iq_topic(modem_id), fft_size=self._fft_size, center_freq=self._current_center_freq,
+                sample_rate=self._current_sample_rate, update_time=self._update_time, line_label=f"Modem {modem_id} RX IQ", title=f"Modem {modem_id} RX FFT",)
             pane.start()
             self._channel_tabs[modem_id] = pane
             self._tabs.addTab(pane, f"Modem {modem_id}")
+
+    def _set_channel_frequency_ranges(self, channels: List[dict], channel_sample_rate: float):
+        if channel_sample_rate <= 0:
+            channel_sample_rate = DEFAULT_MODEM_SLICE_SAMPLE_RATE
+
+        for ch in channels:
+            if not isinstance(ch, dict):
+                continue
+
+            try:
+                modem_id = int(ch.get("modemId", -1))
+                rx_freq = float(ch.get("rxFreq", 0.0))
+            except (TypeError, ValueError):
+                continue
+
+            if modem_id <= 0:
+                continue
+
+            pane = self._channel_tabs.get(modem_id)
+            if pane is None:
+                continue
+
+            # Modem IQ tabs are post-channelizer slices; use slice center/rate.
+            if rx_freq > 0.0:
+                pane.set_frequency_range(rx_freq, channel_sample_rate)
 
     def _refresh_runtime_status(self):
         self._refresh_runtime_status_zmq()
@@ -285,6 +275,11 @@ class ZmqFftViewer(Qt.QWidget):
                         modem_ids.append(int(ch.get("modemId", -1)))
                     except (TypeError, ValueError):
                         continue
+            try:
+                channel_sample_rate = float(status.get("channelSampleRate", DEFAULT_MODEM_SLICE_SAMPLE_RATE))
+            except (TypeError, ValueError):
+                channel_sample_rate = DEFAULT_MODEM_SLICE_SAMPLE_RATE
+            channels_list = channels if isinstance(channels, list) else []
             self._ensure_channel_tabs([m for m in modem_ids if m > 0])
 
             selected = None
@@ -303,11 +298,12 @@ class ZmqFftViewer(Qt.QWidget):
                 continue
 
             signature = (center, sample_rate)
-            if signature == self._last_runtime_signature:
-                continue
+            if signature != self._last_runtime_signature:
+                self._set_wideband_frequency_range(center, sample_rate)
+                self._last_runtime_signature = signature
 
-            self._set_frequency_range(center, sample_rate)
-            self._last_runtime_signature = signature
+            # Apply modem-tab slice ranges after any wideband axis update.
+            self._set_channel_frequency_ranges(channels_list, channel_sample_rate)
 
     def start(self):
         self._wideband_tab.start()

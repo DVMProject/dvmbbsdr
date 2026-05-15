@@ -70,6 +70,11 @@ sdr:
         # Center-frequency correction in PPM.
         freqCorrPpm: 0
 
+        # Optional tuning center offsets (Hz) applied after center calculation.
+        # Useful to shift active channels away from SDR DC spike at center.
+        #rxCenterOffsetHz: 0
+        #txCenterOffsetHz: 0
+
         # Optional: publish wideband RX IQ samples to ZeroMQ for external FFT viewers.
         # Empty string disables export.
         # Example: "tcp://127.0.0.1:5557"
@@ -88,6 +93,11 @@ sdr:
           # Center-frequency correction in PPM.
           freqCorrPpm: 0
 
+          # Optional per-device tuning center offsets (Hz).
+          # Example: keep RX channels ~25 kHz off DC spike.
+          #rxCenterOffsetHz: 25000
+          #txCenterOffsetHz: 0
+
           # Gain controls (dB).
           rxGain: 30
           txGain: 30
@@ -95,10 +105,6 @@ sdr:
           # Optional antenna names (driver dependent; blank = default).
           #rxAntenna: ""
           #txAntenna: ""
-
-          # Optional frontend bandwidth hints (Hz); 0 = automatic.
-          #rxBandwidth: 0
-          #txBandwidth: 0
 
           # Optional per-device override for RX IQ ZeroMQ export tap.
           #rxIqTapAddress: "tcp://127.0.0.1:5557"
@@ -112,6 +118,10 @@ sdr:
           # Center-frequency correction in PPM.
           freqCorrPpm: 0
 
+          # Optional per-device tuning center offsets (Hz).
+          #rxCenterOffsetHz: 25000
+          #txCenterOffsetHz: 0
+
           # Gain controls (dB).
           rxGain: 30
           txGain: 30
@@ -119,10 +129,6 @@ sdr:
           # Optional antenna names (driver dependent; blank = default).
           rxAntenna: ""
           txAntenna: ""
-
-          # Optional frontend bandwidth hints (Hz); 0 = automatic.
-          #rxBandwidth: 0
-          #txBandwidth: 0
 
           # Optional per-device override for RX IQ ZeroMQ export tap.
           #rxIqTapAddress: "tcp://127.0.0.1:5558"

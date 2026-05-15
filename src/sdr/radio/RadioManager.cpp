@@ -95,6 +95,25 @@ bool parseCanTx(const std::string& args)
 }
 
 /**
+ * @brief Helper to apply a frequency offset in Hz to a base frequency, ensuring that the result is clamped to the valid range of 1 Hz to 4.294967295 GHz.
+ * This is used to calculate the adjusted center frequency for an SDR device based on a configured offset, while ensuring that the resulting frequency is valid for the hardware.
+ * @param baseHz Base frequency in Hz to which the offset should be applied.
+ * @param offsetHz Frequency offset in Hz to apply to the base frequency. This can be positive or negative.
+ * @return uint32_t Adjusted frequency in Hz after applying the offset, clamped to the range of 1 Hz to 4.294967295 GHz.
+ */
+uint32_t applyCenterOffsetHz(uint64_t baseHz, int32_t offsetHz)
+{
+    int64_t adjusted = static_cast<int64_t>(baseHz) + static_cast<int64_t>(offsetHz);
+    if (adjusted < 1LL)
+        adjusted = 1LL;
+
+    if (adjusted > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
+        adjusted = static_cast<int64_t>(std::numeric_limits<uint32_t>::max());
+
+    return static_cast<uint32_t>(adjusted);
+}
+
+/**
  * @brief Helper to generate a ZeroMQ topic string for modem IQ taps based on the modem ID. This function constructs a 
  * topic string by concatenating a fixed prefix with the modem ID, which can be used for publishing IQ samples from 
  * specific modem channels to a ZeroMQ PUB socket.
@@ -374,11 +393,22 @@ class IqTapPublisher final : public gr::sync_block {
 public:
     using sptr = std::shared_ptr<IqTapPublisher>;
 
+    /**
+     * @brief Factory method to create a new instance of the IqTapPublisher block.
+     * @param topic ZeroMQ topic string to which the IQ samples should be published (e.g., "modem-iq-1").
+     * @return sptr Shared pointer to the created IqTapPublisher instance.
+     */
     static sptr make(const std::string& topic)
     {
         return std::make_shared<IqTapPublisher>(topic);
     }
 
+    /**
+     * @brief Initializes a new instance of the IqTapPublisher class. Initializing the sync_block with appropriate input and output signatures.
+     * The block will publish the input IQ samples to a ZeroMQ PUB socket under the specified topic, while forwarding the samples 
+     * unchanged to its output. This allows for real-time monitoring of the IQ data from the SDR without affecting the main signal path.
+     * @param topic ZeroMQ topic string to which the IQ samples should be published (e.g., "modem-iq-1").
+     */
     IqTapPublisher(const std::string& topic) :
         gr::sync_block("dvmbbsdr_iq_tap_pub",
             gr::io_signature::make(1, 1, sizeof(gr_complex)),
@@ -388,6 +418,17 @@ public:
         /* stub */
     }
 
+    /**
+     * @brief Overrides the work function of the sync_block to publish IQ samples to a ZeroMQ PUB socket while forwarding 
+     * the stream unchanged. The block reads the input IQ samples, publishes them to the configured topic, and then 
+     * copies the samples to the output buffer. This allows for real-time monitoring of the IQ data without affecting 
+     * the main signal path. The function checks if the input and output buffers are valid and if the number of output 
+     * items is positive before processing the samples.
+     * @param noutput_items Number of output items (samples) to produce.
+     * @param input_items Vector of input buffers containing the IQ samples to publish and forward.
+     * @param output_items Vector of output buffers where the block should write its output samples.
+     * @return int Number of output items produced, which should be equal to noutput_items
+     */
     int work(int noutput_items, gr_vector_const_void_star& input_items, gr_vector_void_star& output_items) override
     {
         const gr_complex* in = reinterpret_cast<const gr_complex*>(input_items[0]);
@@ -1087,6 +1128,8 @@ bool RadioManager::parseConfig(yaml::Node& conf)
     const std::string defaultRxAntenna = defaults["rxAntenna"].as<std::string>("");
     const std::string defaultTxAntenna = defaults["txAntenna"].as<std::string>("");
     const std::string defaultRxIqTapAddress = defaults["rxIqTapAddress"].as<std::string>("");
+    const int defaultRxCenterOffsetHz = defaults["rxCenterOffsetHz"].as<int>(0);
+    const int defaultTxCenterOffsetHz = defaults["txCenterOffsetHz"].as<int>(0);
 
     m_radioStatusPubAddress = sdrConf["radioStatusPubAddress"].as<std::string>("");
 
@@ -1103,6 +1146,8 @@ bool RadioManager::parseConfig(yaml::Node& conf)
         def.txAntenna = defaultTxAntenna;
         def.canTx = true;
         def.rxIqTapAddress = defaultRxIqTapAddress;
+        def.rxCenterOffsetHz = defaultRxCenterOffsetHz;
+        def.txCenterOffsetHz = defaultTxCenterOffsetHz;
         def.rxCenter = 0U;
         def.txCenter = 0U;
         def.assignedRxChannels = 0U;
@@ -1124,6 +1169,8 @@ bool RadioManager::parseConfig(yaml::Node& conf)
             state.txAntenna = dev["txAntenna"].as<std::string>(defaultTxAntenna);
             state.canTx = parseCanTx(state.args);
             state.rxIqTapAddress = dev["rxIqTapAddress"].as<std::string>(defaultRxIqTapAddress);
+            state.rxCenterOffsetHz = dev["rxCenterOffsetHz"].as<int>(defaultRxCenterOffsetHz);
+            state.txCenterOffsetHz = dev["txCenterOffsetHz"].as<int>(defaultTxCenterOffsetHz);
             state.rxCenter = 0U;
             state.txCenter = 0U;
             state.assignedRxChannels = 0U;
@@ -1209,12 +1256,16 @@ void RadioManager::recomputeDeviceCenters()
 
         if (dev.assignedRxChannels > 0U) {
             const uint64_t avg = (static_cast<uint64_t>(rxMin) + static_cast<uint64_t>(rxMax)) / 2ULL;
-            dev.rxCenter = static_cast<uint32_t>(avg);
+            dev.rxCenter = applyCenterOffsetHz(avg, dev.rxCenterOffsetHz);
         }
 
         if (dev.assignedTxChannels > 0U) {
             const uint64_t avg = (static_cast<uint64_t>(txMin) + static_cast<uint64_t>(txMax)) / 2ULL;
-            dev.txCenter = static_cast<uint32_t>(avg);
+            dev.txCenter = applyCenterOffsetHz(avg, dev.txCenterOffsetHz);
+        }
+
+        if (m_debug && (dev.rxCenterOffsetHz != 0 || dev.txCenterOffsetHz != 0)) {
+            ::LogInfoEx(LOG_SDR, "SDR %zu center offsets, rx = %d Hz, tx = %d Hz", i, dev.rxCenterOffsetHz, dev.txCenterOffsetHz);
         }
     }
 }
@@ -1679,6 +1730,7 @@ std::string RadioManager::buildRadioStatusJson() const
     }
 
         ss << "],";
+        ss << "\"channelSampleRate\":" << MODEM_SAMPLE_RATE << ",";
         ss << "\"channels\":[";
 
     // for each channel, include its modem ID, current RX and TX queue sizes in samples, the depth of the delayed 
@@ -1696,6 +1748,10 @@ std::string RadioManager::buildRadioStatusJson() const
 
         ss << "{";
             ss << "\"modemId\":" << static_cast<unsigned>(ch.modemId) << ",";
+            ss << "\"rxDevice\":" << ch.rxDevice << ",";
+            ss << "\"txDevice\":" << ch.txDevice << ",";
+            ss << "\"rxFreq\":" << ch.rxFreq << ",";
+            ss << "\"txFreq\":" << ch.txFreq << ",";
             ss << "\"txQueueSamples\":" << ch.txSampleQueue.size() << ",";
             ss << "\"rxQueueSamples\":" << ch.rxSampleQueue.size() << ",";
             ss << "\"delayedControlDepth\":" << delayedDepth << ",";

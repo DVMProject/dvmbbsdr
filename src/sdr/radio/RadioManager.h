@@ -178,6 +178,9 @@ namespace radio
 
             std::string rxIqTapAddress;
 
+            int32_t rxCenterOffsetHz;
+            int32_t txCenterOffsetHz;
+
             uint32_t rxCenter;
             uint32_t txCenter;
             uint32_t assignedRxChannels;
