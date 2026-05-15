@@ -29,14 +29,16 @@ using namespace modem;
 // ---------------------------------------------------------------------------
 
 #define RX_RF_REPORT_INTERVAL_MS 1000U
-#define RX_RF_IDLE_INTERVAL_MS 500U
+
 #define TX_FRAME_SAMPLES 720U      // 30 ms at 24 kHz modem sample rate
 #define TX_FRAME_SLEEP_US 30000U   // pace one TX frame in real
 #define TX_HANG_MS 250U            // hold TX across short producer gaps
+
 #define RX_DEBUG_LOG_INTERVAL_MS 500U
+
 #define RX_MODEM_SAMPLE_RATE 24000U
-#define RX_MAX_BLOCKS_PER_PROCESS 256U
-#define RX_SAMPLE_BUDGET_MAX 240U
+#define RX_MAX_BLOCKS_PER_PROCESS 720U     // process up to 30 ms of samples per call to keep latency low
+#define RX_SAMPLE_BUDGET_MAX 700U          // max samples to buffer before we start dropping 
 
 // Generated using rcosdesign(0.2, 8, 5, 'sqrt') in MATLAB
 static q15_t RRC_0_2_FILTER[] = {

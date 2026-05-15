@@ -1003,7 +1003,7 @@ bool RadioManager::parseConfig(yaml::Node& conf)
                 txDev.args.c_str());
         }
 
-        ::LogInfoEx(LOG_SDR, "Modem %u BINDING, rxDev = %d, txDev=%d", modemId, ch.rxDevice, ch.txDevice);
+        ::LogInfoEx(LOG_SDR, "Modem %u BINDING, rxDev = %d, txDev = %d", modemId, ch.rxDevice, ch.txDevice);
     }
 
     return true;

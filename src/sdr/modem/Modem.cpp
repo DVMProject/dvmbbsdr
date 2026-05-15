@@ -205,19 +205,13 @@ void* Modem::threadClock(void* arg)
         stopWatch.start();
 
         while (!g_killed) {
-            // scope is intentional
-            {
-                // ------------------------------------------------------
-                //  -- RPC Clocking                                   --
-                // ------------------------------------------------------
+            uint32_t ms = stopWatch.elapsed();
+            stopWatch.start();
 
-                uint32_t ms = stopWatch.elapsed();
-                stopWatch.start();
+            modem->clock(ms);
 
-                modem->clock(ms);
-            }
-
-            Thread::sleep(1U);
+            if (ms <= 1U)
+                Thread::sleep(1U);
         }
 
         LogInfoEx(LOG_HOST, "[STOP] %s", threadName.c_str());
