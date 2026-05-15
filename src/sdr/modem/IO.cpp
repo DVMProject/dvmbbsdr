@@ -33,6 +33,10 @@ using namespace modem;
 #define TX_FRAME_SAMPLES 720U      // 30 ms at 24 kHz modem sample rate
 #define TX_FRAME_SLEEP_US 30000U   // pace one TX frame in real
 #define TX_HANG_MS 250U            // hold TX across short producer gaps
+#define RX_DEBUG_LOG_INTERVAL_MS 500U
+#define RX_MODEM_SAMPLE_RATE 24000U
+#define RX_MAX_BLOCKS_PER_PROCESS 256U
+#define RX_SAMPLE_BUDGET_MAX 240U
 
 // Generated using rcosdesign(0.2, 8, 5, 'sqrt') in MATLAB
 static q15_t RRC_0_2_FILTER[] = {
@@ -227,6 +231,11 @@ void IO::start()
 
 void IO::process()
 {
+    static uint64_t lastRxDebugLogMs = 0U;
+    static uint64_t lastRxDrainLimitLogMs = 0U;
+    static uint64_t lastRxBudgetUpdateMs = 0U;
+    static uint32_t rxSampleBudget = 0U;
+
     if (m_started) {
         // Two seconds timeout
         if (m_watchdog >= 48000U) {
@@ -281,7 +290,24 @@ void IO::process()
         m_modem->setModemTxActive(false);
     }
 
-    if (m_rxBuffer.getData() >= RX_BLOCK_SIZE) {
+    const uint64_t nowBudgetMs = monotonicMs();
+    if (lastRxBudgetUpdateMs == 0U)
+        lastRxBudgetUpdateMs = nowBudgetMs;
+
+    uint64_t elapsedMs = nowBudgetMs - lastRxBudgetUpdateMs;
+    lastRxBudgetUpdateMs = nowBudgetMs;
+    if (elapsedMs > 100U)
+        elapsedMs = 100U;
+
+    rxSampleBudget += static_cast<uint32_t>(elapsedMs * (RX_MODEM_SAMPLE_RATE / 1000U));
+    if (rxSampleBudget > RX_SAMPLE_BUDGET_MAX)
+        rxSampleBudget = RX_SAMPLE_BUDGET_MAX;
+
+    uint32_t drainedBlocks = 0U;
+    for (; drainedBlocks < RX_MAX_BLOCKS_PER_PROCESS && rxSampleBudget >= RX_BLOCK_SIZE && m_rxBuffer.getData() >= RX_BLOCK_SIZE;
+        drainedBlocks++) {
+        rxSampleBudget -= RX_BLOCK_SIZE;
+
         q15_t samples[RX_BLOCK_SIZE];
         uint8_t control[RX_BLOCK_SIZE];
         uint16_t rssi[RX_BLOCK_SIZE];
@@ -297,6 +323,15 @@ void IO::process()
 
             q31_t res1 = sample * m_rxLevel;
             samples[i] = q15_t(__SSAT((res1 >> 15), 16));
+
+            if (m_debug && rssi[i] > 1024) {
+                const uint64_t nowMs = monotonicMs();
+                if (lastRxDebugLogMs == 0U || (nowMs - lastRxDebugLogMs) >= RX_DEBUG_LOG_INTERVAL_MS) {
+                    lastRxDebugLogMs = nowMs;
+                    ::LogDebugEx(LOG_SDR, "IO::interruptRx()", "Modem %u (%s) RX SAMPLE, sample = %d, scaled = %d, control = %u, rssi = %u, rxLvlQ15 = %d",
+                        m_modem->m_modemId, m_modem->m_modemPty.c_str(), sample, samples[i], control[i], rssi[i], m_rxLevel);
+                }
+            }
         }
 
         if (m_lockout)
@@ -435,6 +470,15 @@ void IO::process()
             m_modem->m_calRSSI.samples(rssi, RX_BLOCK_SIZE);
         }
     }
+
+    if (m_debug && (drainedBlocks >= RX_MAX_BLOCKS_PER_PROCESS || (m_rxBuffer.getData() >= RX_BLOCK_SIZE && rxSampleBudget < RX_BLOCK_SIZE))) {
+        const uint64_t nowMs = monotonicMs();
+        if (lastRxDrainLimitLogMs == 0U || (nowMs - lastRxDrainLimitLogMs) >= 1000U) {
+            lastRxDrainLimitLogMs = nowMs;
+            ::LogDebugEx(LOG_SDR, "IO::process()", "Modem %u (%s) RX drain limited, drainedBlocks = %u, budgetSamples = %u, pendingSamples = %u",
+                m_modem->m_modemId, m_modem->m_modemPty.c_str(), drainedBlocks, rxSampleBudget, m_rxBuffer.getData());
+        }
+    }
 }
 
 /* Write samples to air interface. */
@@ -570,8 +614,8 @@ void IO::setParameters(bool rxInvert, bool txInvert, bool pttInvert, uint8_t rxL
     m_p25TXLevel = q15_t(p25TXLevel * 128);
     m_nxdnTXLevel =  q15_t(nxdnTXLevel * 128);
 
-    ::LogInfoEx(LOG_SDR, "Modem %u (%s) RX LVL: %u CWID TX LVL: %u DMR TX LVL: %u P25 TX LVL: %u NXDN TX LVL: %u", m_modem->m_modemId, m_modem->m_modemPty.c_str(), m_rxLevel, m_cwIdTXLevel, m_dmrTXLevel, m_p25TXLevel, m_nxdnTXLevel);
-    ::LogInfoEx(LOG_SDR, "Modem %u (%s) RX INVERT: %u TX INVERT: %u", m_modem->m_modemId, m_modem->m_modemPty.c_str(), m_rxInvert, m_txInvert);
+    ::LogInfoEx(LOG_SDR, "Modem %u (%s) rxLevel = %u, cwIdTXLevel = %u, dmrTXLevel = %u, p25TXLevel = %u, nxdnTXLevel = %u", m_modem->m_modemId, m_modem->m_modemPty.c_str(), m_rxLevel, m_cwIdTXLevel, m_dmrTXLevel, m_p25TXLevel, m_nxdnTXLevel);
+    ::LogInfoEx(LOG_SDR, "Modem %u (%s) rxInvert = %u, txInvert = %u", m_modem->m_modemId, m_modem->m_modemPty.c_str(), m_rxInvert, m_txInvert);
 
     radio::RadioManager::instance().setChannelPolarity(m_modem->m_modemId, m_rxInvert, m_txInvert);
 }
@@ -615,7 +659,7 @@ uint8_t IO::setRFParams(uint32_t rxFreq, uint32_t txFreq, uint8_t rfPower)
 
     m_modem->setRFChannel(rxFreq, txFreq, rfPower, m_rxInvert, m_txInvert);
 
-    ::LogInfoEx(LOG_SDR, "Modem %u (%s) RX FREQ: %u TX FREQ: %u PWR: %u", m_modem->m_modemId, m_modem->m_modemPty.c_str(), m_rxFrequency, m_txFrequency, m_rfPower);
+    ::LogInfoEx(LOG_SDR, "Modem %u (%s) rxFrequency = %u, txFrequency = %u, rfPower = %u", m_modem->m_modemId, m_modem->m_modemPty.c_str(), m_rxFrequency, m_txFrequency, m_rfPower);
 
     return RSN_OK;
 }
@@ -644,6 +688,9 @@ void IO::setAFCParams(bool afcEnable, uint8_t afcKI, uint8_t afcKP, uint8_t afcR
     m_afcKP = afcKP;
     m_afcRange = afcRange;
 
+    radio::RadioManager::instance().setChannelAFC(m_modem->m_modemId, afcEnable, afcKI, afcKP, afcRange);
+
+    ::LogInfoEx(LOG_SDR, "Modem %u (%s) AFC params, enable = %u, KI = %u, KP = %u, range = %u", m_modem->m_modemId, m_modem->m_modemPty.c_str(), afcEnable, afcKI, afcKP, afcRange);
     m_modem->writeDebug("IO::setAFCParams() AFC params", afcEnable, afcKI, afcKP, afcRange);
 }
 

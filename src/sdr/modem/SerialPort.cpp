@@ -182,6 +182,7 @@ void SerialPort::process()
                         sendACK();
                     }
                     else {
+                        ::LogError(LOG_SERIAL, "SerialPort::process() received invalid calibration data, modemState = %u, err = %d", m_modem->m_modemState, err);
                         m_modem->writeDebug("SerialPort::process() received invalid calibration data", err);
                         sendNAK(err);
                     }
@@ -197,6 +198,7 @@ void SerialPort::process()
                         sendACK();
                     }
                     else {
+                        ::LogError(LOG_SERIAL, "SerialPort::process() received invalid data to write to flash, err = %d", err);
                         m_modem->writeDebug("SerialPort::process() received invalid data to write to flash", err);
                         sendNAK(err);
                     }
@@ -212,6 +214,7 @@ void SerialPort::process()
                         sendACK();
                     }
                     else {
+                        ::LogError(LOG_SERIAL, "SerialPort::process() received invalid data to set buffers, err = %d", err);
                         m_modem->writeDebug("SerialPort::process() received invalid data to set buffers", err);
                         sendNAK(err);
                     }
@@ -223,6 +226,7 @@ void SerialPort::process()
                     if (m_modem->m_modemState == STATE_IDLE)
                         err = m_modem->m_cwIdTX.write(m_buffer + 3U, m_len - 3U);
                     if (err != RSN_OK) {
+                        ::LogError(LOG_SERIAL, "SerialPort::process() received invalid CW Id data, modemState = %u, err = %d", m_modem->m_modemState, err);
                         m_modem->writeDebug("SerialPort::process() invalid CW Id data", err);
                         sendNAK(err);
                     }
@@ -241,6 +245,7 @@ void SerialPort::process()
                             setMode(STATE_DMR);
                     }
                     else {
+                        ::LogError(LOG_SERIAL, "SerialPort::process() received invalid DMR data, modemState = %u, err = %d", m_modem->m_modemState, err);
                         m_modem->writeDebug("SerialPort: process() received invalid DMR data", err);
                         sendNAK(err);
                     }
@@ -260,6 +265,7 @@ void SerialPort::process()
                             setMode(STATE_DMR);
                     }
                     else {
+                        ::LogError(LOG_SERIAL, "SerialPort::process() received invalid DMR data, modemState = %u, err = %d", m_modem->m_modemState, err);
                         m_modem->writeDebug("SerialPort::process() received invalid DMR data", err);
                         sendNAK(err);
                     }
@@ -282,6 +288,7 @@ void SerialPort::process()
                         }
                     }
                     if (err != RSN_OK) {
+                        ::LogError(LOG_SERIAL, "SerialPort::process() received invalid DMR start, modemState = %u, err = %d", m_modem->m_modemState, err);
                         m_modem->writeDebug("SerialPort::process() received invalid DMR start", err);
                         sendNAK(err);
                     }
@@ -291,6 +298,7 @@ void SerialPort::process()
                     if (m_modem->m_dmrEnable)
                         err = m_modem->m_dmrTX.writeShortLC(m_buffer + 3U, m_len - 3U);
                     if (err != RSN_OK) {
+                        ::LogError(LOG_SERIAL, "SerialPort::process() received invalid DMR Short LC, modemState = %u, err = %d", m_modem->m_modemState, err);
                         m_modem->writeDebug("SerialPort::process() received invalid DMR Short LC", err);
                         sendNAK(err);
                     }
@@ -300,6 +308,7 @@ void SerialPort::process()
                     if (m_modem->m_dmrEnable)
                         err = m_modem->m_dmrTX.writeAbort(m_buffer + 3U, m_len - 3U);
                     if (err != RSN_OK) {
+                        ::LogError(LOG_SERIAL, "SerialPort::process() received invalid DMR Abort, modemState = %u, err = %d", m_modem->m_modemState, err);
                         m_modem->writeDebug("SerialPort::process() received invalid DMR Abort", err);
                         sendNAK(err);
                     }
@@ -314,6 +323,7 @@ void SerialPort::process()
                         }
                     }
                     if (err != RSN_OK) {
+                        ::LogError(LOG_SERIAL, "SerialPort::process() received invalid DMR CACH AT Control, modemState = %u, err = %d", m_modem->m_modemState, err);
                         m_modem->writeDebug("SerialPort::process() received invalid DMR CACH AT Control", err);
                         sendNAK(err);
                     }
@@ -347,6 +357,7 @@ void SerialPort::process()
                             setMode(STATE_P25);
                     }
                     else {
+                        ::LogError(LOG_SERIAL, "SerialPort::process() received invalid P25 data, modemState = %u, err = %d", m_modem->m_modemState, err);
                         m_modem->writeDebug("SerialPort::process() received invalid P25 data", err);
                         sendNAK(err);
                     }
@@ -370,6 +381,7 @@ void SerialPort::process()
                             setMode(STATE_NXDN);
                     }
                     else {
+                        ::LogError(LOG_SERIAL, "SerialPort::process() received invalid NXDN data, modemState = %u, err = %d", m_modem->m_modemState, err);
                         m_modem->writeDebug("SerialPort::process() received invalid NXDN data", err);
                         sendNAK(err);
                     }
@@ -644,7 +656,7 @@ void SerialPort::writeDebug(const char* text)
         return;
 
     if (m_modem->m_debug)
-        ::LogDebug(LOG_SDR, "DSP_FW_API %s", text);
+        ::LogDebug(LOG_SERIAL, "DSP_FW_API %s", text);
 
     uint8_t reply[130U];
     ::memset(reply, 0x00U, 130U);
@@ -670,7 +682,7 @@ void SerialPort::writeDebug(const char* text, int16_t n1)
         return;
 
     if (m_modem->m_debug)
-        ::LogDebug(LOG_SDR, "DSP_FW_API %s %X", text, n1);
+        ::LogDebug(LOG_SERIAL, "DSP_FW_API %s %X", text, n1);
 
     uint8_t reply[130U];
     ::memset(reply, 0x00U, 130U);
@@ -699,7 +711,7 @@ void SerialPort::writeDebug(const char* text, int16_t n1, int16_t n2)
         return;
 
     if (m_modem->m_debug)
-        ::LogDebug(LOG_SDR, "DSP_FW_API %s %X %X", text, n1, n2);
+        ::LogDebug(LOG_SERIAL, "DSP_FW_API %s %X %X", text, n1, n2);
 
     uint8_t reply[130U];
     ::memset(reply, 0x00U, 130U);
@@ -731,7 +743,7 @@ void SerialPort::writeDebug(const char* text, int16_t n1, int16_t n2, int16_t n3
         return;
 
     if (m_modem->m_debug)
-        ::LogDebug(LOG_SDR, "DSP_FW_API %s %X %X %X", text, n1, n2, n3);
+        ::LogDebug(LOG_SERIAL, "DSP_FW_API %s %X %X %X", text, n1, n2, n3);
 
     uint8_t reply[130U];
     ::memset(reply, 0x00U, 130U);
@@ -766,7 +778,7 @@ void SerialPort::writeDebug(const char* text, int16_t n1, int16_t n2, int16_t n3
         return;
 
     if (m_modem->m_debug)
-        ::LogDebug(LOG_SDR, "DSP_FW_API %s %X %X %X %X", text, n1, n2, n3, n4);
+        ::LogDebug(LOG_SERIAL, "DSP_FW_API %s %X %X %X %X", text, n1, n2, n3, n4);
 
     uint8_t reply[130U];
     ::memset(reply, 0x00U, 130U);
@@ -1119,12 +1131,16 @@ void SerialPort::setMode(DVM_STATE modemState)
 {
     switch (modemState) {
     case STATE_DMR:
+        if (m_modem->m_debug)
+            ::LogDebugEx(LOG_SERIAL, "SerialPort::setMode()", "mode set to DMR");
         m_modem->writeDebug("SerialPort::setMode() mode set to DMR");
         m_modem->m_p25RX.reset();
         m_modem->m_nxdnRX.reset();
         m_modem->m_cwIdTX.reset();
         break;
     case STATE_P25:
+        if (m_modem->m_debug)
+            ::LogDebugEx(LOG_SERIAL, "SerialPort::setMode()", "mode set to P25");
         m_modem->writeDebug("SerialPort::setMode() mode set to P25");
         m_modem->m_dmrIdleRX.reset();
         m_modem->m_dmrDMORX.reset();
@@ -1133,6 +1149,8 @@ void SerialPort::setMode(DVM_STATE modemState)
         m_modem->m_cwIdTX.reset();
         break;
     case STATE_NXDN:
+        if (m_modem->m_debug)
+            ::LogDebugEx(LOG_SERIAL, "SerialPort::setMode()", "mode set to NXDN");
         m_modem->writeDebug("SerialPort::setMode() mode set to NXDN");
         m_modem->m_dmrIdleRX.reset();
         m_modem->m_dmrDMORX.reset();
@@ -1142,6 +1160,8 @@ void SerialPort::setMode(DVM_STATE modemState)
         m_modem->m_cwIdTX.reset();
         break;
     case STATE_DMR_CAL:
+        if (m_modem->m_debug)
+            ::LogDebugEx(LOG_SERIAL, "SerialPort::setMode()", "mode set to DMR Calibrate");
         m_modem->writeDebug("SerialPort::setMode() mode set to DMR Calibrate");
         m_modem->m_dmrIdleRX.reset();
         m_modem->m_dmrDMORX.reset();
@@ -1151,6 +1171,8 @@ void SerialPort::setMode(DVM_STATE modemState)
         m_modem->m_cwIdTX.reset();
         break;
     case STATE_P25_CAL:
+        if (m_modem->m_debug)
+            ::LogDebugEx(LOG_SERIAL, "SerialPort::setMode()", "mode set to P25 Calibrate");
         m_modem->writeDebug("SerialPort::setMode() mode set to P25 Calibrate");
         m_modem->m_dmrIdleRX.reset();
         m_modem->m_dmrDMORX.reset();
@@ -1160,6 +1182,8 @@ void SerialPort::setMode(DVM_STATE modemState)
         m_modem->m_cwIdTX.reset();
         break;
     case STATE_NXDN_CAL:
+        if (m_modem->m_debug)
+            ::LogDebugEx(LOG_SERIAL, "SerialPort::setMode()", "mode set to NXDN Calibrate");
         m_modem->writeDebug("SerialPort::setMode() mode set to NXDN Calibrate");
         m_modem->m_dmrIdleRX.reset();
         m_modem->m_dmrDMORX.reset();
@@ -1169,6 +1193,8 @@ void SerialPort::setMode(DVM_STATE modemState)
         m_modem->m_cwIdTX.reset();
         break;
     case STATE_RSSI_CAL:
+        if (m_modem->m_debug)
+            ::LogDebugEx(LOG_SERIAL, "SerialPort::setMode()", "mode set to RSSI Calibrate");
         m_modem->writeDebug("SerialPort::setMode() mode set to RSSI Calibrate");
         m_modem->m_dmrIdleRX.reset();
         m_modem->m_dmrDMORX.reset();
@@ -1178,6 +1204,8 @@ void SerialPort::setMode(DVM_STATE modemState)
         m_modem->m_cwIdTX.reset();
         break;
     case STATE_DMR_LF_CAL:
+        if (m_modem->m_debug)
+            ::LogDebugEx(LOG_SERIAL, "SerialPort::setMode()", "mode set to DMR 80Hz Calibrate");
         m_modem->writeDebug("SerialPort::setMode() mode set to DMR 80Hz Calibrate");
         m_modem->m_dmrIdleRX.reset();
         m_modem->m_dmrDMORX.reset();
@@ -1187,6 +1215,8 @@ void SerialPort::setMode(DVM_STATE modemState)
         m_modem->m_cwIdTX.reset();
         break;
     case STATE_DMR_CAL_1K:
+        if (m_modem->m_debug)
+            ::LogDebugEx(LOG_SERIAL, "SerialPort::setMode()", "mode set to DMR BS 1031Hz Calibrate");
         m_modem->writeDebug("SerialPort::setMode() mode set to DMR BS 1031Hz Calibrate");
         m_modem->m_dmrIdleRX.reset();
         m_modem->m_dmrDMORX.reset();
@@ -1196,6 +1226,8 @@ void SerialPort::setMode(DVM_STATE modemState)
         m_modem->m_cwIdTX.reset();
         break;
     case STATE_DMR_DMO_CAL_1K:
+        if (m_modem->m_debug)
+            ::LogDebugEx(LOG_SERIAL, "SerialPort::setMode()", "mode set to DMR DMO 1031Hz Calibrate");
         m_modem->writeDebug("SerialPort::setMode() mode set to DMR MS 1031Hz Calibrate");
         m_modem->m_dmrIdleRX.reset();
         m_modem->m_dmrDMORX.reset();
@@ -1205,6 +1237,8 @@ void SerialPort::setMode(DVM_STATE modemState)
         m_modem->m_cwIdTX.reset();
         break;
     case STATE_P25_CAL_1K:
+        if (m_modem->m_debug)
+            ::LogDebugEx(LOG_SERIAL, "SerialPort::setMode()", "mode set to P25 1011Hz Calibrate");
         m_modem->writeDebug("SerialPort::setMode() mode set to P25 1011Hz Calibrate");
         m_modem->m_dmrIdleRX.reset();
         m_modem->m_dmrDMORX.reset();
@@ -1214,6 +1248,8 @@ void SerialPort::setMode(DVM_STATE modemState)
         m_modem->m_cwIdTX.reset();
         break;
     default:
+        if (m_modem->m_debug)
+            ::LogDebugEx(LOG_SERIAL, "SerialPort::setMode()", "mode set to Idle");
         m_modem->writeDebug("SerialPort::setMode() mode set to Idle");
         // STATE_IDLE
         break;

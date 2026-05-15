@@ -129,13 +129,11 @@ int SDR::run()
     if (!ret)
         return EXIT_FAILURE;
 
-    ret = ::radio::RadioManager::instance().initialize(m_conf);
+    ret = ::radio::RadioManager::instance().initialize(m_conf, m_debug);
     if (!ret) {
         ::LogError(LOG_HOST, "Failed to initialize SDR RF runtime");
         return EXIT_FAILURE;
     }
-
-    ::radio::RadioManager::instance().setDebug(m_debug);
 
     // initialize modems
     ret = createModems();

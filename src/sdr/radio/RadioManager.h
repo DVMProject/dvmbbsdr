@@ -59,9 +59,11 @@ namespace radio
          * based on the provided YAML configuration, starts the GNU Radio flowgraphs for each device, and begins publishing 
          * runtime status. It must be called before any other methods to ensure the RadioManager is properly set up.
          * @param conf YAML node containing the configuration for the SDR devices and channels.
+         * @param debug True to enable debug logging, false to disable it. Debug logging may include additional 
+         * information about the internal operation of the RadioManager, which can be useful for troubleshooting and development.
          * @returns bool True if initialization was successful, otherwise false.
          */
-        bool initialize(yaml::Node& conf);
+        bool initialize(yaml::Node& conf, bool debug);
         /**
          * @brief Shuts down the RadioManager, stopping all GNU Radio flowgraphs, clearing channel queues, and releasing 
          * resources. This method should be called when the SDR runtime is no longer needed to ensure a clean shutdown 
@@ -95,6 +97,15 @@ namespace radio
          * @param rfPower RF power level hint.
          */
         void setChannelParams(uint8_t modemId, uint32_t rxFreq, uint32_t txFreq, uint8_t rfPower);
+        /**
+         * @brief Helper to configure AFC for a specific modem channel.
+         * @param modemId Modem ID of the channel to configure.
+         * @param enable True to enable AFC.
+         * @param afcKI AFC integral gain parameter.
+         * @param afcKP AFC proportional gain parameter.
+         * @param afcRange AFC correction range parameter.
+         */
+        void setChannelAFC(uint8_t modemId, bool enable, uint8_t afcKI, uint8_t afcKP, uint8_t afcRange);
         /**
          * @brief Helper to set the TX active state for a specific modem channel. This method is used to indicate whether 
          * the channel is currently active for transmission, which affects whether samples from the channel's TX queue 
@@ -205,11 +216,26 @@ namespace radio
             uint32_t txPhase;
             std::complex<float> prevRxIq;
             std::deque<uint8_t> delayedControl;
+            uint8_t rxDiscrDecimCount;
+            long rxDiscrAccum;
+            float rxDiscrDcEstimate;
+            int32_t rxHostFreqOffsetCompHz;
+            bool afcEnable;
+            uint8_t afcKI;
+            uint8_t afcKP;
+            uint8_t afcRange;
+            double afcErrorAccum;
+            double afcIntegrator;
+            uint32_t afcSampleCount;
+            int32_t rxAfcOffsetHz;
 
             uint64_t txInputSamples;
             uint64_t txZeroFillSamples;
             uint64_t rxSamples;
             uint64_t rxRssiClampSamples;
+            uint32_t rxRawRssiMin;
+            uint32_t rxRawRssiMax;
+            uint16_t rxSampleAbsPeak;
             uint64_t rxControlAlignedSamples;
             uint64_t rxControlDeferredSamples;
             size_t maxDelayedControlDepth;

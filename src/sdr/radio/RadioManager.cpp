@@ -50,11 +50,21 @@ using namespace radio;
 
 #define MODEM_SAMPLE_RATE 24000.0
 #define CHANNELIZER_TARGET_RATE 96000.0
+#define RX_DISCRIMINATOR_INPUT_RATE MODEM_SAMPLE_RATE
+#define RX_DISCRIMINATOR_DECIMATION 1U
 
-#define NBFM_BANDWIDTH_HZ 12500.0
+#define C4FM_DEVIATION_HZ 2880.0
+#define RX_CHANNEL_LPF_CUTOFF_HZ 14400.0
+#define RX_CHANNEL_LPF_TRANSITION_HZ 2880.0
+#define RX_DISCRIMINATOR_TARGET_PEAK 1152.0f
+#define RX_DISCRIMINATOR_DC_ALPHA 0.0005f
 #define RX_RSSI_SCALE 100000000.0f
+#define RX_DISCRIMINATOR_BASELINE 1.5f  // Bridge-only gain trim for I/Q discriminator drive into modem RX path
+
 #define TX_FM_DEVIATION 550000
+
 #define CONTROL_DELAY_SAMPLES 96U
+
 #define CHANNEL_MARK_NONE 0x00U
 
 // ---------------------------------------------------------------------------
@@ -421,11 +431,12 @@ RadioManager& RadioManager::instance()
 
 /* Initializes the RadioManager with the given configuration.*/
 
-bool RadioManager::initialize(yaml::Node& conf)
+bool RadioManager::initialize(yaml::Node& conf, bool debug)
 {
     shutdown();
 
     std::lock_guard<std::mutex> lock(m_lock);
+    m_debug = debug;
 
     if (!parseConfig(conf))
         return false;
@@ -485,12 +496,48 @@ void RadioManager::setChannelParams(uint8_t modemId, uint32_t rxFreq, uint32_t t
     std::lock_guard<std::mutex> lock(m_lock);
 
     ChannelState& ch = ensureChannel(modemId);
+
+    // Auto-detect host-applied RX-only fine offset steps (e.g. +6000 Hz test workflow)
+    // and compensate them in the channelizer so the I/Q discriminator stays near zero-CFO.
+    if (ch.rxFreq != 0U && ch.txFreq == txFreq) {
+        const int64_t deltaRx = static_cast<int64_t>(rxFreq) - static_cast<int64_t>(ch.rxFreq);
+        if (std::llabs(deltaRx) > 0LL && std::llabs(deltaRx) <= 20000LL) {
+            ch.rxHostFreqOffsetCompHz = static_cast<int32_t>(deltaRx);
+            if (m_debug) {
+                ::LogInfoEx(LOG_SDR, "Modem %u host RX offset compensation update, deltaHz = %d",
+                    static_cast<unsigned>(modemId), ch.rxHostFreqOffsetCompHz);
+            }
+        }
+    }
+
     ch.rxFreq = rxFreq;
     ch.txFreq = txFreq;
     ch.rfPower = rfPower;
 
     recomputeDeviceCenters();
     applyRetune();
+}
+
+/* Helper to set AFC state for a specific modem channel. */
+
+void RadioManager::setChannelAFC(uint8_t modemId, bool enable, uint8_t afcKI, uint8_t afcKP, uint8_t afcRange)
+{
+    std::lock_guard<std::mutex> lock(m_lock);
+
+    ChannelState& ch = ensureChannel(modemId);
+    ch.afcEnable = enable || (afcRange > 0U);
+    ch.afcKI = afcKI;
+    ch.afcKP = afcKP;
+    ch.afcRange = afcRange;
+    ch.afcErrorAccum = 0.0;
+    ch.afcIntegrator = 0.0;
+    ch.afcSampleCount = 0U;
+    ch.rxAfcOffsetHz = 0;
+
+    if (m_debug) {
+        ::LogInfoEx(LOG_SDR, "Modem %u AFC config, enable = %u, afcKI = %u, afcKP = %u, afcRange = %u",
+            static_cast<unsigned>(modemId), ch.afcEnable ? 1U : 0U, ch.afcKI, ch.afcKP, ch.afcRange);
+    }
 }
 
 /* Helper to set the TX active state for a specific modem channel. */
@@ -616,16 +663,106 @@ void RadioManager::enqueueChannelRxIqSamples(uint8_t modemId, const std::complex
     std::lock_guard<std::mutex> lock(m_lock);
     ChannelState& ch = ensureChannel(modemId);
 
+    // Channels without an assigned RX frequency are not active; ignore their
+    // incoming stream so inactive modems do not consume RX queue budget.
+    if (ch.rxFreq == 0U)
+        return;
+
+    const float discrScale = (static_cast<float>(RX_DISCRIMINATOR_INPUT_RATE) /
+        (2.0f * static_cast<float>(M_PI) * C4FM_DEVIATION_HZ)) * RX_DISCRIMINATOR_TARGET_PEAK * RX_DISCRIMINATOR_BASELINE;
+
     for (size_t i = 0U; i < sampleCount; ++i) {
         const std::complex<float> iq = src[i];
-        const float d = std::arg(iq * std::conj(ch.prevRxIq));
+        if (!std::isfinite(iq.real()) || !std::isfinite(iq.imag())) {
+            ch.rxRssiClampSamples++;
+            continue;
+        }
+
+        if (!std::isfinite(ch.prevRxIq.real()) || !std::isfinite(ch.prevRxIq.imag()))
+            ch.prevRxIq = std::complex<float>(0.0f, 0.0f);
+
+        const std::complex<float> phaseDelta = iq * std::conj(ch.prevRxIq);
+        const float d = std::atan2(phaseDelta.imag(), phaseDelta.real());
         ch.prevRxIq = iq;
+
+        const long discr = static_cast<long>(std::lround(d * discrScale));
+        ch.rxDiscrAccum += discr;
+        ch.rxDiscrDecimCount++;
+
+        if (ch.rxDiscrDecimCount < RX_DISCRIMINATOR_DECIMATION)
+            continue;
+
+        const float discrOutF = static_cast<float>(ch.rxDiscrAccum) /
+            static_cast<float>(RX_DISCRIMINATOR_DECIMATION);
+        ch.rxDiscrAccum = 0L;
+        ch.rxDiscrDecimCount = 0U;
+
+        // Remove slow discriminator DC wander from residual carrier error before modem-domain filters/slicing.
+        ch.rxDiscrDcEstimate += RX_DISCRIMINATOR_DC_ALPHA * (discrOutF - ch.rxDiscrDcEstimate);
+        const long discrOut = static_cast<long>(std::lround(discrOutF - ch.rxDiscrDcEstimate));
+
+        if (ch.afcEnable) {
+            ch.afcErrorAccum += static_cast<double>(discrOut);
+            ch.afcSampleCount++;
+
+            constexpr uint32_t AFC_UPDATE_SAMPLES = 38400U;
+            if (ch.afcSampleCount >= AFC_UPDATE_SAMPLES) {
+                const double avgDiscr = ch.afcErrorAccum / static_cast<double>(ch.afcSampleCount);
+                const double hzPerDiscr = static_cast<double>(C4FM_DEVIATION_HZ) /
+                    (static_cast<double>(RX_DISCRIMINATOR_TARGET_PEAK) * static_cast<double>(RX_DISCRIMINATOR_BASELINE));
+                const double freqErrHz = avgDiscr * hzPerDiscr;
+                const double afcRangeHz = std::max(100.0, static_cast<double>(ch.afcRange) * 1000.0);
+                const double pGain = static_cast<double>(std::max<uint8_t>(1U, ch.afcKP)) / 32.0;
+                const double iGain = static_cast<double>(ch.afcKI) / 2048.0;
+
+                if (std::abs(freqErrHz) < 50.0) {
+                    ch.afcErrorAccum = 0.0;
+                    ch.afcSampleCount = 0U;
+                    return;
+                }
+
+                ch.afcIntegrator += freqErrHz;
+                if (ch.afcIntegrator > afcRangeHz)
+                    ch.afcIntegrator = afcRangeHz;
+                else if (ch.afcIntegrator < -afcRangeHz)
+                    ch.afcIntegrator = -afcRangeHz;
+
+                double correctionHz = (freqErrHz * pGain) + (ch.afcIntegrator * iGain);
+                if (correctionHz > afcRangeHz)
+                    correctionHz = afcRangeHz;
+                else if (correctionHz < -afcRangeHz)
+                    correctionHz = -afcRangeHz;
+
+                double steppedCorrectionHz = correctionHz * 0.0625;
+                if (steppedCorrectionHz > 50.0)
+                    steppedCorrectionHz = 50.0;
+                else if (steppedCorrectionHz < -50.0)
+                    steppedCorrectionHz = -50.0;
+
+                const int32_t afcStep = static_cast<int32_t>(std::lround(steppedCorrectionHz));
+                const int32_t nextOffset = ch.rxAfcOffsetHz + afcStep;
+                const int32_t rangeLimit = static_cast<int32_t>(std::lround(afcRangeHz));
+                ch.rxAfcOffsetHz = std::max(-rangeLimit, std::min(rangeLimit, nextOffset));
+
+                if (m_debug) {
+                    ::LogInfoEx(LOG_SDR, "Modem %u AFC update, avgDiscr = %0.3f, freqErrHz = %0.3f, corrHz = %0.3f, newOffsetHz = %d",
+                        static_cast<unsigned>(modemId), avgDiscr, freqErrHz, correctionHz, ch.rxAfcOffsetHz);
+                }
+
+                ch.afcErrorAccum = 0.0;
+                ch.afcSampleCount = 0U;
+            }
+        }
+
         ch.rxSamples++;
 
-        const long discr = static_cast<long>(std::lround(d * (4096.0f / static_cast<float>(M_PI))));
-        int16_t sample = clampToInt16(discr, ch.rxRssiClampSamples);
+        int16_t sample = clampToInt16(discrOut, ch.rxRssiClampSamples);
         if (ch.rxInvert)
             sample = static_cast<int16_t>(-sample);
+
+        const uint16_t absSample = static_cast<uint16_t>(std::abs(static_cast<int>(sample)));
+        if (absSample > ch.rxSampleAbsPeak)
+            ch.rxSampleAbsPeak = absSample;
 
         uint8_t alignedControl = CHANNEL_MARK_NONE;
         if (ch.delayedControl.size() > CONTROL_DELAY_SAMPLES) {
@@ -640,6 +777,17 @@ void RadioManager::enqueueChannelRxIqSamples(uint8_t modemId, const std::complex
         const float rawRssiFloat = RX_RSSI_SCALE * std::norm(iq);
         if (rawRssiFloat > 65535.0f || rawRssiFloat < 0.0f)
             ch.rxRssiClampSamples++;
+        const float rawRssiNonNegative = std::max(rawRssiFloat, 0.0f);
+        const float rawRssiBounded = std::min(rawRssiNonNegative, static_cast<float>(std::numeric_limits<uint32_t>::max()));
+        const uint32_t rawRssi = static_cast<uint32_t>(std::lround(rawRssiBounded));
+        if (ch.rxSamples == 1U) {
+            ch.rxRawRssiMin = rawRssi;
+            ch.rxRawRssiMax = rawRssi;
+        }
+        else {
+            ch.rxRawRssiMin = std::min(ch.rxRawRssiMin, rawRssi);
+            ch.rxRawRssiMax = std::max(ch.rxRawRssiMax, rawRssi);
+        }
         const float rssiFloat = clampRssi(rawRssiFloat);
         const uint16_t rxRssi = static_cast<uint16_t>(rssiFloat);
 
@@ -727,10 +875,25 @@ RadioManager::ChannelState& RadioManager::ensureChannel(uint8_t modemId)
     ch.txPhase = 0U;
     ch.prevRxIq = std::complex<float>(0.0f, 0.0f);
     ch.delayedControl.assign(CONTROL_DELAY_SAMPLES, CHANNEL_MARK_NONE);
+    ch.rxDiscrDecimCount = 0U;
+    ch.rxDiscrAccum = 0L;
+    ch.rxDiscrDcEstimate = 0.0f;
+    ch.rxHostFreqOffsetCompHz = 0;
+    ch.afcEnable = false;
+    ch.afcKI = 0U;
+    ch.afcKP = 0U;
+    ch.afcRange = 0U;
+    ch.afcErrorAccum = 0.0;
+    ch.afcIntegrator = 0.0;
+    ch.afcSampleCount = 0U;
+    ch.rxAfcOffsetHz = 0;
     ch.txInputSamples = 0U;
     ch.txZeroFillSamples = 0U;
     ch.rxSamples = 0U;
     ch.rxRssiClampSamples = 0U;
+    ch.rxRawRssiMin = 0U;
+    ch.rxRawRssiMax = 0U;
+    ch.rxSampleAbsPeak = 0U;
     ch.rxControlAlignedSamples = 0U;
     ch.rxControlDeferredSamples = 0U;
     ch.maxDelayedControlDepth = ch.delayedControl.size();
@@ -823,12 +986,12 @@ bool RadioManager::parseConfig(yaml::Node& conf)
         ch.txDevice = txDevice;
 
         if (ch.rxDevice < 0 || static_cast<size_t>(ch.rxDevice) >= m_devices.size()) {
-            ::LogWarning(LOG_SDR, "Modem %u references invalid rxDevice=%d, remapping to 0", modemId, ch.rxDevice);
+            ::LogWarning(LOG_SDR, "Modem %u references invalid Rx device, remapping to 0, rxDevice = %d", modemId, ch.rxDevice);
             ch.rxDevice = 0;
         }
 
         if (ch.txDevice < 0 || static_cast<size_t>(ch.txDevice) >= m_devices.size()) {
-            ::LogWarning(LOG_SDR, "Modem %u references invalid txDevice=%d, remapping to 0", modemId, ch.txDevice);
+            ::LogWarning(LOG_SDR, "Modem %u references invalid Tx device, remapping to 0, txDevice = %d", modemId, ch.txDevice);
             ch.txDevice = 0;
         }
 
@@ -840,7 +1003,7 @@ bool RadioManager::parseConfig(yaml::Node& conf)
                 txDev.args.c_str());
         }
 
-        ::LogInfoEx(LOG_SDR, "Modem %u BINDING, RX dev=%d, TX dev=%d, mode=IQ_ONLY", modemId, ch.rxDevice, ch.txDevice);
+        ::LogInfoEx(LOG_SDR, "Modem %u BINDING, rxDev = %d, txDev=%d", modemId, ch.rxDevice, ch.txDevice);
     }
 
     return true;
@@ -933,6 +1096,13 @@ void RadioManager::startRadios()
         if (hasRx) {
             runtime.source = osmosdr::source::make(dev.args);
             runtime.source->set_sample_rate(dev.sampleRate);
+            const double rxActualRate = runtime.source->get_sample_rate();
+            if (std::fabs(rxActualRate - dev.sampleRate) > 1.0) {
+                ::LogWarning(LOG_SDR, "SDR %zu RX sample rate coerced, requested = %0.3f, actual = %0.3f", i, dev.sampleRate, rxActualRate);
+            }
+            else if (m_debug) {
+                ::LogInfoEx(LOG_SDR, "SDR %zu RX sample rate, requested = %0.3f, actual = %0.3f", i, dev.sampleRate, rxActualRate);
+            }
             runtime.source->set_gain(dev.rxGain);
             runtime.source->set_freq_corr(dev.freqCorrPpm);
             if (!dev.rxAntenna.empty())
@@ -953,8 +1123,13 @@ void RadioManager::startRadios()
             const unsigned decim = std::max(1U, asUnsignedRate(dev.sampleRate / CHANNELIZER_TARGET_RATE, 1U));
             const double chanRate = dev.sampleRate / static_cast<double>(decim);
 
-            const std::vector<float> xlateTaps = gr::filter::firdes::low_pass(1.0, dev.sampleRate, NBFM_BANDWIDTH_HZ,
-                NBFM_BANDWIDTH_HZ * 0.35, gr::fft::window::WIN_HAMMING);
+            const std::vector<float> xlateTaps = gr::filter::firdes::low_pass(1.0, dev.sampleRate, RX_CHANNEL_LPF_CUTOFF_HZ,
+                RX_CHANNEL_LPF_TRANSITION_HZ, gr::fft::window::WIN_HAMMING);
+
+            if (m_debug) {
+                ::LogDebugEx(LOG_SDR, "RadioManager::startRadios()", "SDR %zu RX channelizer, devRate = %0.3f, decim = %u, chanRate = %0.3f, lpfCutoff = %0.3f, lpfTransition = %0.3f, discrRate = %0.3f",
+                    i, dev.sampleRate, decim, chanRate, RX_CHANNEL_LPF_CUTOFF_HZ, RX_CHANNEL_LPF_TRANSITION_HZ, RX_DISCRIMINATOR_INPUT_RATE);
+            }
 
             // for each assigned RX channel, create a chain of blocks to translate, resample, and sink IQ to the shim.
             // samples to the modem processing queue
@@ -964,14 +1139,15 @@ void RadioManager::startRadios()
                     continue;
 
                 const ChannelState& ch = chIt->second;
-                const double offsetHz = static_cast<double>(ch.rxFreq) - static_cast<double>(dev.rxCenter);
+                const double offsetHz = static_cast<double>(ch.rxFreq) - static_cast<double>(dev.rxCenter) - static_cast<double>(ch.rxHostFreqOffsetCompHz) - static_cast<double>(ch.rxAfcOffsetHz);
 
                 auto xlate = gr::filter::freq_xlating_fir_filter_ccf::make(static_cast<int>(decim), xlateTaps,
                     offsetHz, dev.sampleRate);
 
                 const unsigned chanRateInt = asUnsignedRate(chanRate, 96000U);
-                const unsigned g = std::gcd(chanRateInt, static_cast<unsigned>(MODEM_SAMPLE_RATE));
-                const unsigned interp = static_cast<unsigned>(MODEM_SAMPLE_RATE) / g;
+                const unsigned discrRateInt = asUnsignedRate(RX_DISCRIMINATOR_INPUT_RATE, static_cast<unsigned>(MODEM_SAMPLE_RATE));
+                const unsigned g = std::gcd(chanRateInt, discrRateInt);
+                const unsigned interp = discrRateInt / g;
                 const unsigned dec = chanRateInt / g;
                 auto resamp = gr::filter::rational_resampler_ccf::make(interp, dec);
                 auto rxSink = ModemRxIqSink::make(this, modemId);
@@ -995,6 +1171,13 @@ void RadioManager::startRadios()
         if (hasTx) {
             runtime.sink = osmosdr::sink::make(dev.args);
             runtime.sink->set_sample_rate(dev.sampleRate);
+            const double txActualRate = runtime.sink->get_sample_rate();
+            if (std::fabs(txActualRate - dev.sampleRate) > 1.0) {
+                ::LogWarning(LOG_SDR, "SDR %zu TX sample rate coerced, requested = %0.3f, actual = %0.3f", i, dev.sampleRate, txActualRate);
+            }
+            else if (m_debug) {
+                ::LogInfoEx(LOG_SDR, "SDR %zu TX sample rate, requested = %0.3f, actual = %0.3f", i, dev.sampleRate, txActualRate);
+            }
             runtime.sink->set_gain(dev.txGain);
             runtime.sink->set_freq_corr(dev.freqCorrPpm);
             if (!dev.txAntenna.empty())
@@ -1168,7 +1351,7 @@ void RadioManager::applyRetune()
             const ChannelState& ch = stateIt->second;
 
             if (chRt.rxXlate) {
-                const double offsetHz = static_cast<double>(ch.rxFreq) - static_cast<double>(dev.rxCenter);
+                const double offsetHz = static_cast<double>(ch.rxFreq) - static_cast<double>(dev.rxCenter) - static_cast<double>(ch.rxHostFreqOffsetCompHz) - static_cast<double>(ch.rxAfcOffsetHz);
                 chRt.rxXlate->set_center_freq(offsetHz);
             }
 
@@ -1331,6 +1514,9 @@ std::string RadioManager::buildRuntimeStatusJson() const
             ss << "\"txZeroFillSamples\":" << ch.txZeroFillSamples << ",";
             ss << "\"rxSamples\":" << ch.rxSamples << ",";
             ss << "\"rxRssiClampSamples\":" << ch.rxRssiClampSamples << ",";
+            ss << "\"rxRawRssiMin\":" << ch.rxRawRssiMin << ",";
+            ss << "\"rxRawRssiMax\":" << ch.rxRawRssiMax << ",";
+            ss << "\"rxSampleAbsPeak\":" << ch.rxSampleAbsPeak << ",";
             ss << "\"rxControlAlignedSamples\":" << ch.rxControlAlignedSamples << ",";
             ss << "\"rxControlDeferredSamples\":" << ch.rxControlDeferredSamples;
         ss << "}";
@@ -1353,7 +1539,7 @@ void RadioManager::logRuntimeDiagnostics(uint64_t nowMs)
 
     m_lastDiagnosticsLogMs = nowMs;
 
-    ::LogInfoEx(LOG_SDR, "RadioManager DIAGNOSTICS, devices=%zu, channels=%zu", m_devices.size(), m_channels.size());
+    ::LogInfoEx(LOG_SDR, "RadioManager DIAGNOSTICS, devices = %zu, channels = %zu", m_devices.size(), m_channels.size());
     // for each channel, log the current RX and TX queue sizes in bytes and samples, the total dropped bytes for RX and TX, 
     // the assigned device indices and frequencies, the computed center frequencies and offsets from center, and whether 
     // the channel is currently active for transmission
@@ -1378,11 +1564,12 @@ void RadioManager::logRuntimeDiagnostics(uint64_t nowMs)
         const size_t delayedDepth = ch.delayedControl.size();
         const long long controlLag = (delayedDepth > CONTROL_DELAY_SAMPLES) ? static_cast<long long>(delayedDepth - CONTROL_DELAY_SAMPLES) : 0LL;
 
-        ::LogInfoEx(LOG_SDR, "Modem %u DIAGNOSTICS, rxQ = %zuB/%zuS, txQ = %zuB/%zuS, dropRx = %lluB, dropTx = %lluB, rxDev = %d, rxFreq = %u, rxCenter = %u, rxOff = %lld, txDev = %d, txFreq = %u, txCenter = %u, txOff = %lld, txActive = %u, dlyCtl = %zu, dlyCtlMax = %zu, ctlLag = %lld, txPhase = %u, txIn = %llu, txZero = %llu, rxShim = %llu, rxClamp = %llu, rxCtlAlign = %llu, rxCtlDef = %llu",
+        ::LogInfoEx(LOG_SDR, "Modem %u DIAGNOSTICS, rxQ = %zuB/%zuS, txQ = %zuB/%zuS, dropRx = %lluB, dropTx = %lluB, rxDev = %d, rxFreq = %u, rxCenter = %u, rxOff = %lld, rxComp = %d, rxAFC = %d, afcOn=%u, txDev = %d, txFreq = %u, txCenter = %u, txOff = %lld, txActive = %u, dlyCtl = %zu, dlyCtlMax = %zu, ctlLag = %lld, txPhase = %u, txIn = %llu, txZero = %llu, rxShim = %llu, rxClamp = %llu, rxRawMin = %u, rxRawMax = %u, rxPeak = %u, rxCtlAlign = %llu, rxCtlDef = %llu",
             ch.modemId, rxQueueBytes, rxQueueSamples, txQueueBytes, txQueueSamples,static_cast<unsigned long long>(ch.droppedRxBytes), static_cast<unsigned long long>(ch.droppedTxBytes), ch.rxDevice,
-            ch.rxFreq, rxCenter, static_cast<long long>(rxOffset), ch.txDevice, ch.txFreq, txCenter, static_cast<long long>(txOffset), ch.txActive ? 1U : 0U,
+            ch.rxFreq, rxCenter, static_cast<long long>(rxOffset), ch.rxHostFreqOffsetCompHz, ch.rxAfcOffsetHz, ch.afcEnable ? 1U : 0U, ch.txDevice, ch.txFreq, txCenter, static_cast<long long>(txOffset), ch.txActive ? 1U : 0U,
             delayedDepth, ch.maxDelayedControlDepth, controlLag, ch.txPhase, static_cast<unsigned long long>(ch.txInputSamples),
             static_cast<unsigned long long>(ch.txZeroFillSamples), static_cast<unsigned long long>(ch.rxSamples), static_cast<unsigned long long>(ch.rxRssiClampSamples),
+            ch.rxRawRssiMin, ch.rxRawRssiMax, static_cast<unsigned>(ch.rxSampleAbsPeak),
             static_cast<unsigned long long>(ch.rxControlAlignedSamples), static_cast<unsigned long long>(ch.rxControlDeferredSamples));
     }
 }

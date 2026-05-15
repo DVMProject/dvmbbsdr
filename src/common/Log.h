@@ -47,7 +47,7 @@
 /** @cond */
 
 #define LOG_HOST    "HOST"
-#define LOG_NET     "NET"
+#define LOG_SERIAL  "SERIAL"
 #define LOG_SDR     "SDR"
 #define LOG_MODEM   "MODEM"
 #define LOG_P25     "P25"
