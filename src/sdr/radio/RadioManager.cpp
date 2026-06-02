@@ -819,8 +819,6 @@ void RadioManager::runtimeLoop()
             deviceRx[dev] = deviceTx[dev];
 #endif
         }
-
-        ::usleep(BLOCK_MS * 1000U);
     }
 }
 
