@@ -220,27 +220,35 @@ bool SDR::readParams()
     yaml::Node devicesNode = sdrConf["devices"];
     if (devicesNode.size() == 0U) {
         LogInfo("    No SDR devices defined, using default configuration");
-    }
-    else {
-        for (size_t i = 0; i < devicesNode.size(); ++i) {
-            yaml::Node& dev = devicesNode[i];
-            std::string args = dev["args"].as<std::string>("");
-            double sampleRate = dev["sampleRate"].as<double>(defaultSampleRate);
-            double rxGain = dev["rxGain"].as<double>(defaultRxGain);
-            double txGain = dev["txGain"].as<double>(defaultTxGain);
-            double freqCorrPpm = dev["freqCorrPpm"].as<double>(defaultFreqCorrPpm);
-            std::string rxAntenna = dev["rxAntenna"].as<std::string>("");
-            std::string txAntenna = dev["txAntenna"].as<std::string>("");
-
-            LogInfo("    SDR %zu:", i);
-            LogInfo("        Args: %s", args.c_str());
-            LogInfo("        Sample Rate: %f", sampleRate);
-            LogInfo("        RX Gain: %f", rxGain);
-            LogInfo("        TX Gain: %f", txGain);
-            LogInfo("        Frequency Correction PPM: %f", freqCorrPpm);
-            LogInfo("        RX Antenna: %s", rxAntenna.empty() ? "default" : rxAntenna.c_str());
-            LogInfo("        TX Antenna: %s", txAntenna.empty() ? "default" : txAntenna.c_str());
+    } else {
+        if (devicesNode.size() > 1U) {
+            LogError(LOG_HOST, "Only one SDR device configuration is supported (found %zu)", devicesNode.size());
+            return false;
         }
+
+        yaml::Node& dev = devicesNode[0U];
+        std::string args = dev["args"].as<std::string>("");
+        double sampleRate = dev["sampleRate"].as<double>(defaultSampleRate);
+        double rxGain = dev["rxGain"].as<double>(defaultRxGain);
+        double txGain = dev["txGain"].as<double>(defaultTxGain);
+        double freqCorrPpm = dev["freqCorrPpm"].as<double>(defaultFreqCorrPpm);
+        std::string rxAntenna = dev["rxAntenna"].as<std::string>("");
+        std::string txAntenna = dev["txAntenna"].as<std::string>("");
+
+        LogInfo("    SDR 0:");
+        LogInfo("        Args: %s", args.c_str());
+        LogInfo("        Sample Rate: %f", sampleRate);
+        LogInfo("        RX Gain: %f", rxGain);
+        LogInfo("        TX Gain: %f", txGain);
+        LogInfo("        Frequency Correction PPM: %f", freqCorrPpm);
+        LogInfo("        RX Antenna: %s", rxAntenna.empty() ? "default" : rxAntenna.c_str());
+        LogInfo("        TX Antenna: %s", txAntenna.empty() ? "default" : txAntenna.c_str());
+    }
+
+    yaml::Node modemList = m_conf["modems"];
+    if (modemList.size() != 1U) {
+        LogError(LOG_HOST, "Exactly one modem configuration is required (found %zu)", modemList.size());
+        return false;
     }
 
     return true;
@@ -251,78 +259,80 @@ bool SDR::readParams()
 bool SDR::createModems()
 {
     yaml::Node& modemList = m_conf["modems"];
-    if (modemList.size() > 0U) {
-        for (size_t i = 0; i < modemList.size(); i++) {
-            yaml::Node& modemConf = modemList[i];
-
-            yaml::Node modemProtocol = modemConf["protocol"];
-            std::string uartPort = modemProtocol["port"].as<std::string>();
-            uint32_t uartSpeed = modemProtocol["speed"].as<uint32_t>(115200);
-
-            bool trace = m_trace;
-            bool debug = m_debug;
-
-            // if modem debug is being forced from the commandline -- enable modem debug
-            if (g_debug) {
-                debug = true;
-            }
-
-            LogInfo("Modem %u Parameters", i + 1);
-            LogInfo("    Port Type: %s", PTY_PORT);
-            LogInfo("    PTY Port: %s", uartPort.c_str());
-            LogInfo("    PTY Speed: %u", uartSpeed);
-
-            port::IModemPort* modemPort = nullptr;
-            port::SERIAL_SPEED serialSpeed = port::SERIAL_115200;
-            switch (uartSpeed) {
-            case 1200:
-                serialSpeed = port::SERIAL_1200;
-                break;
-            case 2400:
-                serialSpeed = port::SERIAL_2400;
-                break;
-            case 4800:
-                serialSpeed = port::SERIAL_4800;
-                break;
-            case 9600:
-                serialSpeed = port::SERIAL_9600;
-                break;
-            case 19200:
-                serialSpeed = port::SERIAL_19200;
-                break;
-            case 38400:
-                serialSpeed = port::SERIAL_38400;
-                break;
-            case 76800:
-                serialSpeed = port::SERIAL_76800;
-                break;
-            case 230400:
-                serialSpeed = port::SERIAL_230400;
-                break;
-            case 460800:
-                serialSpeed = port::SERIAL_460800;
-                break;
-            default:
-                LogWarning(LOG_HOST, "Unsupported serial speed %u, defaulting to %u", uartSpeed, port::SERIAL_115200);
-                uartSpeed = 115200;
-            case 115200:
-                break;
-            }
-
-            modemPort = new port::PseudoPTYPort(uartPort, serialSpeed, false);
-
-            Modem* modem = new Modem(modemPort, (uint8_t)i, uartPort, trace, debug);
-
-            bool ret = modem->open();
-            if (!ret) {
-                LogError(LOG_HOST, "Failed to open PTY for %s", uartPort.c_str());
-                delete modem;
-                modem = nullptr;
-            }
-
-            m_modems.push_back(modem);
-        }
+    if (modemList.size() != 1U) {
+        LogError(LOG_HOST, "Exactly one modem configuration is required (found %zu)", modemList.size());
+        return false;
     }
+
+    const size_t i = 0U;
+    yaml::Node& modemConf = modemList[i];
+
+    yaml::Node modemProtocol = modemConf["protocol"];
+    std::string uartPort = modemProtocol["port"].as<std::string>();
+    uint32_t uartSpeed = modemProtocol["speed"].as<uint32_t>(115200);
+
+    bool trace = m_trace;
+    bool debug = m_debug;
+
+    // if modem debug is being forced from the commandline -- enable modem debug
+    if (g_debug) {
+        debug = true;
+    }
+
+    LogInfo("Modem %u Parameters", i + 1);
+    LogInfo("    Port Type: %s", PTY_PORT);
+    LogInfo("    PTY Port: %s", uartPort.c_str());
+    LogInfo("    PTY Speed: %u", uartSpeed);
+
+    port::IModemPort* modemPort = nullptr;
+    port::SERIAL_SPEED serialSpeed = port::SERIAL_115200;
+    switch (uartSpeed) {
+    case 1200:
+        serialSpeed = port::SERIAL_1200;
+        break;
+    case 2400:
+        serialSpeed = port::SERIAL_2400;
+        break;
+    case 4800:
+        serialSpeed = port::SERIAL_4800;
+        break;
+    case 9600:
+        serialSpeed = port::SERIAL_9600;
+        break;
+    case 19200:
+        serialSpeed = port::SERIAL_19200;
+        break;
+    case 38400:
+        serialSpeed = port::SERIAL_38400;
+        break;
+    case 76800:
+        serialSpeed = port::SERIAL_76800;
+        break;
+    case 230400:
+        serialSpeed = port::SERIAL_230400;
+        break;
+    case 460800:
+        serialSpeed = port::SERIAL_460800;
+        break;
+    default:
+        LogWarning(LOG_HOST, "Unsupported serial speed %u, defaulting to %u", uartSpeed, port::SERIAL_115200);
+        uartSpeed = 115200;
+    case 115200:
+        break;
+    }
+
+    modemPort = new port::PseudoPTYPort(uartPort, serialSpeed, false);
+
+    Modem* modem = new Modem(modemPort, static_cast<uint8_t>(i), uartPort, trace, debug);
+
+    bool ret = modem->open();
+    if (!ret) {
+        LogError(LOG_HOST, "Failed to open PTY for %s", uartPort.c_str());
+        delete modem;
+        modem = nullptr;
+    }
+
+    m_modems.push_back(modem);
 
     return true;
 }

@@ -38,10 +38,10 @@ static constexpr uint32_t BLOCK_MS = 10U;
 
 static constexpr size_t PROCESS_BLOCK_SAMPLES = 240U;
 
-static constexpr size_t MAX_TX_QUEUE_SAMPLES = 24000U;
-static constexpr size_t MAX_RX_QUEUE_SAMPLES = 24000U;
+static constexpr size_t MAX_TX_QUEUE_SAMPLES = 2400U;
+static constexpr size_t MAX_RX_QUEUE_SAMPLES = 2400U;
 
-static constexpr size_t MAX_READ_SAMPLES = 960U;               // up to 40 ms per call
+static constexpr size_t MAX_READ_SAMPLES = PROCESS_BLOCK_SAMPLES;
 
 static constexpr size_t DEFAULT_CONTROL_DELAY_SAMPLES = 96U;
 static constexpr size_t LATENCY_BLOCKS = 3U;
@@ -49,6 +49,7 @@ static constexpr size_t LATENCY_BLOCKS = 3U;
 static constexpr size_t FDUDC_FILTER_LEN = 11U;
 static constexpr uint32_t MAX_TX_TIMEOUT_RETRIES = 8U;
 static constexpr uint64_t DEVICE_DIAG_INTERVAL_MS = 1000U;
+static constexpr long SOAPY_STREAM_TIMEOUT_US = 20000L;
 
 static constexpr double NOMINAL_CARRIER_BW_HZ = 12500.0;
 static constexpr double MIN_GUARD_BAND_HZ = 2500.0;
@@ -158,7 +159,7 @@ bool RadioManager::initialize(yaml::Node& conf, bool debug)
     m_running = true;
     m_runtimeThread = std::thread(&RadioManager::runtimeLoop, this);
 
-    ::LogInfoEx(LOG_SDR, "RadioManager initialized (reference FM IQ path + wideband channelization)");
+    ::LogInfoEx(LOG_SDR, "RadioManager initialized (single-carrier FM IQ path)");
     return true;
 }
 
@@ -201,9 +202,17 @@ void RadioManager::setChannelParams(uint8_t modemId, uint32_t rxFreq, uint32_t t
 {
     std::lock_guard<std::mutex> lock(m_stateLock);
 
-    ChannelState& channel = m_channels[modemId];
+    if (m_primaryModemValid && modemId != m_primaryModemId)
+        return;
+
+    if (!m_primaryModemValid) {
+        m_primaryModemId = modemId;
+        m_primaryModemValid = true;
+    }
+
+    ChannelState& channel = m_channels[m_primaryModemId];
     if (channel.modemId == 0U) {
-        channel.modemId = modemId;
+        channel.modemId = m_primaryModemId;
         channel.rxDevice = 0U;
         channel.txDevice = 0U;
         channel.txActive = false;
@@ -232,8 +241,8 @@ void RadioManager::setChannelParams(uint8_t modemId, uint32_t rxFreq, uint32_t t
         channel.rxRssiCount = 0U;
         channel.delayedControl.assign(channel.controlDelaySamples, 0U);
 
-        auto rxIt = m_modemRxDevice.find(modemId);
-        auto txIt = m_modemTxDevice.find(modemId);
+        auto rxIt = m_modemRxDevice.find(m_primaryModemId);
+        auto txIt = m_modemTxDevice.find(m_primaryModemId);
         if (rxIt != m_modemRxDevice.end())
             channel.rxDevice = rxIt->second;
         if (txIt != m_modemTxDevice.end())
@@ -373,7 +382,9 @@ RadioManager::RadioManager() :
     m_devices(),
     m_modemRxDevice(),
     m_modemTxDevice(),
-    m_channels()
+    m_channels(),
+    m_primaryModemId(0U),
+    m_primaryModemValid(false)
 {
     /* stub */
 }
@@ -392,6 +403,8 @@ void RadioManager::parseConfig(yaml::Node& conf)
     m_devices.clear();
     m_modemRxDevice.clear();
     m_modemTxDevice.clear();
+    m_primaryModemId = 0U;
+    m_primaryModemValid = false;
 
     yaml::Node sdrConf = conf["sdr"];
     yaml::Node defaults = sdrConf["defaults"];
@@ -412,42 +425,53 @@ void RadioManager::parseConfig(yaml::Node& conf)
     defaultDev.rxGainElement = defaults["rxGainElement"].as<std::string>(defaultDev.rxGainElement);
     defaultDev.txGainElement = defaults["txGainElement"].as<std::string>(defaultDev.txGainElement);
 
-    // parse devices, if no devices are specified, we add a single default device to allow for modem channels to be 
-    // assigned without specifying devices in the config
+    // only a single SDR device is supported in the strict 1:1 runtime.
     yaml::Node devicesNode = sdrConf["devices"];
     if (devicesNode.size() == 0U) {
         m_devices.push_back(defaultDev);
     } else {
-        for (size_t i = 0U; i < devicesNode.size(); i++) {
-            yaml::Node& dev = devicesNode[i];
-            DeviceState state = defaultDev;
-            state.args = dev["args"].as<std::string>(state.args);
-            state.sampleRate = dev["sampleRate"].as<double>(state.sampleRate);
-            state.rxGain = dev["rxGain"].as<double>(state.rxGain);
-            state.txGain = dev["txGain"].as<double>(state.txGain);
-            state.rxBandwidth = dev["rxBandwidth"].as<double>(state.rxBandwidth);
-            state.txBandwidth = dev["txBandwidth"].as<double>(state.txBandwidth);
-            state.freqCorrPpm = dev["freqCorrPpm"].as<double>(state.freqCorrPpm);
-            state.rxCenterOffsetHz = dev["rxCenterOffsetHz"].as<double>(state.rxCenterOffsetHz);
-            state.txCenterOffsetHz = dev["txCenterOffsetHz"].as<double>(state.txCenterOffsetHz);
-            state.rxAntenna = dev["rxAntenna"].as<std::string>(state.rxAntenna);
-            state.txAntenna = dev["txAntenna"].as<std::string>(state.txAntenna);
-            state.clockSource = dev["clockSource"].as<std::string>(state.clockSource);
-            state.timeSource = dev["timeSource"].as<std::string>(state.timeSource);
-            state.rxGainElement = dev["rxGainElement"].as<std::string>(state.rxGainElement);
-            state.txGainElement = dev["txGainElement"].as<std::string>(state.txGainElement);
-
-            m_devices.push_back(state);
+        if (devicesNode.size() > 1U) {
+            ::LogError(LOG_SDR, "Only one SDR device configuration is supported; using devices[0]");
         }
+
+        yaml::Node& dev = devicesNode[0U];
+        DeviceState state = defaultDev;
+        state.args = dev["args"].as<std::string>(state.args);
+        state.sampleRate = dev["sampleRate"].as<double>(state.sampleRate);
+        state.rxGain = dev["rxGain"].as<double>(state.rxGain);
+        state.txGain = dev["txGain"].as<double>(state.txGain);
+        state.rxBandwidth = dev["rxBandwidth"].as<double>(state.rxBandwidth);
+        state.txBandwidth = dev["txBandwidth"].as<double>(state.txBandwidth);
+        state.freqCorrPpm = dev["freqCorrPpm"].as<double>(state.freqCorrPpm);
+        state.rxCenterOffsetHz = dev["rxCenterOffsetHz"].as<double>(state.rxCenterOffsetHz);
+        state.txCenterOffsetHz = dev["txCenterOffsetHz"].as<double>(state.txCenterOffsetHz);
+        state.rxAntenna = dev["rxAntenna"].as<std::string>(state.rxAntenna);
+        state.txAntenna = dev["txAntenna"].as<std::string>(state.txAntenna);
+        state.clockSource = dev["clockSource"].as<std::string>(state.clockSource);
+        state.timeSource = dev["timeSource"].as<std::string>(state.timeSource);
+        state.rxGainElement = dev["rxGainElement"].as<std::string>(state.rxGainElement);
+        state.txGainElement = dev["txGainElement"].as<std::string>(state.txGainElement);
+
+        m_devices.push_back(state);
     }
 
     if (m_devices.empty())
         m_devices.push_back(defaultDev);
 
-    // assign modem channels to devices based on config, with fallback to device 0 for any unassigned channels or 
-    // invalid device indices
+    // only one modem is supported and it is bound 1:1 to device 0.
     yaml::Node modems = conf["modems"];
-    for (size_t i = 0U; i < modems.size(); i++) {
+    if (modems.size() == 0U) {
+        const uint8_t modemId = 1U;
+        m_modemRxDevice[modemId] = 0U;
+        m_modemTxDevice[modemId] = 0U;
+        m_primaryModemId = modemId;
+        m_primaryModemValid = true;
+    } else {
+        if (modems.size() > 1U) {
+            ::LogError(LOG_SDR, "Only one modem configuration is supported; using modems[0]");
+        }
+
+        const size_t i = 0U;
         yaml::Node modemNode = modems[i];
         yaml::Node radioNode = modemNode["radio"];
 
@@ -468,6 +492,8 @@ void RadioManager::parseConfig(yaml::Node& conf)
         const uint8_t modemId = static_cast<uint8_t>(i + 1U);
         m_modemRxDevice[modemId] = rxDevice;
         m_modemTxDevice[modemId] = txDevice;
+        m_primaryModemId = modemId;
+        m_primaryModemValid = true;
     }
 
     recomputeDeviceCenters();
@@ -620,69 +646,61 @@ void RadioManager::updateChannelSpacingMetrics()
 
 void RadioManager::runtimeLoop()
 {
-    std::vector<uint8_t> modemIds;
-
     while (m_running) {
-        // scope is intentional
+        ChannelState* channel = nullptr;
+        size_t rxDev = 0U;
+        size_t txDev = 0U;
+
         {
             std::lock_guard<std::mutex> lock(m_stateLock);
-            modemIds.clear();
-            modemIds.reserve(m_channels.size());
-            for (const auto& kv : m_channels)
-                modemIds.push_back(kv.first);
+            if (m_primaryModemValid) {
+                auto primaryIt = m_channels.find(m_primaryModemId);
+                if (primaryIt != m_channels.end())
+                    channel = &primaryIt->second;
+            }
+
+            if (channel == nullptr && !m_channels.empty()) {
+                auto primaryIt = m_channels.begin();
+                m_primaryModemId = primaryIt->first;
+                m_primaryModemValid = true;
+                channel = &primaryIt->second;
+            }
+
+            if (channel != nullptr) {
+                rxDev = std::min(channel->rxDevice, m_devices.empty() ? 0U : m_devices.size() - 1U);
+                txDev = std::min(channel->txDevice, m_devices.empty() ? 0U : m_devices.size() - 1U);
+            }
         }
 
-        // if there are no modem channels configured, we can skip processing
-        if (modemIds.empty()) {
+        if (channel == nullptr) {
             ::usleep(10000U);
             continue;
         }
 
-        const size_t devCount = std::max<size_t>(1U, m_devices.size());
-        std::vector<std::vector<std::complex<float>>> deviceRx(devCount);
-        std::vector<std::vector<std::complex<float>>> deviceTx(devCount);
+        const double srRx = (rxDev < m_devices.size()) ? std::max(1.0, m_devices[rxDev].sampleRate) : MODEM_SAMPLE_RATE;
+        const size_t hwSamples = std::max<size_t>(PROCESS_BLOCK_SAMPLES,
+            static_cast<size_t>(std::llround(srRx * (static_cast<double>(BLOCK_MS) / 1000.0))));
 
-        // for each device, we prepare the RX and TX buffers based on the sample rate and block size, then read samples from the
-        // hardware into the RX buffers. This allows us to process the samples for each device and channel in blocks, 
-        // which is more efficient than processing sample by sample, if the hardware read fails for any reason, we 
-        // fill the RX buffer with zeros to ensure that the processing can continue without interruption
-        for (size_t dev = 0U; dev < devCount; dev++) {
-            const double sr = (dev < m_devices.size()) ? std::max(1.0, m_devices[dev].sampleRate) : MODEM_SAMPLE_RATE;
-            const size_t hwSamples = std::max<size_t>(PROCESS_BLOCK_SAMPLES, static_cast<size_t>(std::llround(sr * (static_cast<double>(BLOCK_MS) / 1000.0))));
-            deviceRx[dev].assign(hwSamples, std::complex<float>(0.0f, 0.0f));
-            deviceTx[dev].assign(hwSamples, std::complex<float>(0.0f, 0.0f));
+        std::vector<std::complex<float>> channelBuffer(hwSamples, std::complex<float>(0.0f, 0.0f));
 
 #if defined(HAS_SOAPYSDR)
-            bool hwRxOk = false;
-            if (dev < m_devices.size())
-                hwRxOk = readSoapyRx(dev, deviceRx[dev]);
-            if (!hwRxOk)
-                std::fill(deviceRx[dev].begin(), deviceRx[dev].end(), std::complex<float>(0.0f, 0.0f));
-#endif
+        if (rxDev < m_devices.size()) {
+            if (!readSoapyRx(rxDev, channelBuffer))
+                std::fill(channelBuffer.begin(), channelBuffer.end(), std::complex<float>(0.0f, 0.0f));
         }
+#endif
 
-        // for each modem channel, we process the RX samples from the assigned device through the FDU DC block filter 
-        // and NCO mixing, then we apply the demodulation and control extraction to produce the RX samples, control, 
-        // and RSSI values for the channel
-        for (uint8_t modemId : modemIds) {
-            ChannelState* channel = getChannel(modemId);
-            if (channel == nullptr)
-                continue;
+        float peak = 0.0f;
+        uint64_t clips = 0U;
 
+        {
             std::lock_guard<std::mutex> lock(channel->lock);
-            const size_t txDev = std::min(channel->txDevice, devCount - 1U);
-            const size_t rxDev = std::min(channel->rxDevice, devCount - 1U);
 
-            if (rxDev >= deviceRx.size() || txDev >= deviceTx.size())
-                continue;
-
-            const double srRx = (rxDev < m_devices.size()) ? std::max(1.0, m_devices[rxDev].sampleRate) : MODEM_SAMPLE_RATE;
             const uint32_t srInt = static_cast<uint32_t>(std::max(1LL, std::llround(srRx)));
             const uint32_t modemRate = static_cast<uint32_t>(MODEM_SAMPLE_RATE);
             const uint32_t g = std::gcd(srInt, modemRate);
             const uint32_t num = std::max(1U, modemRate / g);
             const uint32_t den = std::max(1U, srInt / g);
-            const size_t hwSamples = std::max<size_t>(PROCESS_BLOCK_SAMPLES, static_cast<size_t>(std::llround(srRx * (static_cast<double>(BLOCK_MS) / 1000.0))));
             size_t controlDelay = ((hwSamples * LATENCY_BLOCKS) * static_cast<size_t>(num)) / static_cast<size_t>(std::max(1U, den));
             controlDelay += FDUDC_FILTER_LEN;
             controlDelay = std::max<size_t>(1U, controlDelay);
@@ -696,17 +714,12 @@ void RadioManager::runtimeLoop()
                 channel->prevRx = std::complex<float>(0.0f, 0.0f);
             }
 
-            // apply NCO mixing to the RX samples to shift the desired channel to baseband, then process the mixed samples 
-            // through the FDU DC block filter
-            std::vector<std::complex<float>> channelBuffer = deviceRx[rxDev];
             for (size_t i = 0U; i < channelBuffer.size(); i++) {
                 const std::complex<float> lo = std::polar(1.0f, -channel->rxNcoPhase);
                 channel->rxNcoPhase = wrapPhase(channel->rxNcoPhase + channel->rxNcoStep);
                 channelBuffer[i] *= lo;
             }
 
-            // process the mixed samples through the FDU DC block filter, which also applies the demodulation and control 
-            // extraction to produce the RX samples, control, and RSSI values for the channel
             channel->fdudc->process(channelBuffer, [channel](std::complex<float> rxIqSample) {
                 float discr = 0.0f;
                 if (channel->prevRx.real() != 0.0f || channel->prevRx.imag() != 0.0f)
@@ -762,65 +775,37 @@ void RadioManager::runtimeLoop()
                 return std::polar(amp, phase);
             });
 
-            // apply NCO mixing to the TX samples to shift the baseband signal up to the desired channel frequency, then we mix the
-            // channel samples onto the device TX buffer for the assigned device. If there are multiple channels assigned 
-            // to the same device, they will be mixed together in the device TX buffer, which allows us to support 
-            // multiple channels per device with different frequencies and polarities
-            const size_t mixCount = std::min(channelBuffer.size(), deviceTx[txDev].size());
-            for (size_t i = 0U; i < mixCount; i++) {
-                const std::complex<float> carrier = std::polar(1.0f, channel->txNcoPhase);
-                channel->txNcoPhase = wrapPhase(channel->txNcoPhase + channel->txNcoStep);
-                deviceTx[txDev][i] += channelBuffer[i] * carrier;
+        }
+
+        for (auto& s : channelBuffer) {
+            const float mag = std::abs(s);
+            peak = std::max(peak, mag);
+            if (mag > 1.0f) {
+                clips++;
+                s /= mag;
             }
         }
 
-        // for each device, we check the TX samples for clipping and compute the peak magnitude, then we write the 
-        // mixed samples to the hardware, if the hardware write fails for any reason, we copy the mixed samples back 
-        // to the RX buffer to allow for loopback testing and diagnostics. We also log diagnostic information about 
-        // the peak magnitude, clipping, occupied bandwidth, and carrier spacing for each device at regular intervals, 
-        // which allows us to monitor the performance and health of the SDR system
-        for (size_t dev = 0U; dev < devCount; dev++) {
-            DeviceState* devState = (dev < m_devices.size()) ? &m_devices[dev] : nullptr;
-            float peak = 0.0f;
-            uint64_t clips = 0U;
+        DeviceState* devState = (txDev < m_devices.size()) ? &m_devices[txDev] : nullptr;
+        if (devState != nullptr) {
+            devState->peakComposite = std::max(devState->peakComposite, peak);
+            devState->clipSamples += clips;
 
-            for (auto& s : deviceTx[dev]) {
-                const float mag = std::abs(s);
-                peak = std::max(peak, mag);
-                if (mag > 1.0f) {
-                    clips++;
-                    s /= mag;
-                }
+            const uint64_t nowMs = monotonicMs();
+            if (devState->lastDiagLogMs == 0U || (nowMs - devState->lastDiagLogMs) >= DEVICE_DIAG_INTERVAL_MS) {
+                ::LogInfoEx(LOG_SDR, "RF dev%zu STATUS, peak=%.3f, clips=%llu",
+                    txDev, devState->peakComposite, static_cast<unsigned long long>(devState->clipSamples));
+
+                devState->peakComposite = 0.0f;
+                devState->clipSamples = 0U;
+                devState->lastDiagLogMs = nowMs;
             }
-
-            if (devState != nullptr) {
-                devState->peakComposite = std::max(devState->peakComposite, peak);
-                devState->clipSamples += clips;
-
-                const uint64_t nowMs = monotonicMs();
-                if (devState->lastDiagLogMs == 0U || (nowMs - devState->lastDiagLogMs) >= DEVICE_DIAG_INTERVAL_MS) {
-                    ::LogInfoEx(LOG_SDR, "RF dev%zu STATUS, peak=%.3f, clips=%llu, occupiedBw=%.1fHz, minSpacing=%.1fHz, guard=%s",
-                        dev, devState->peakComposite, static_cast<unsigned long long>(devState->clipSamples),
-                        devState->occupiedBandwidthHz, devState->minCarrierSpacingHz, devState->guardBandViolated ? "VIOLATION" : "ok");
-
-                    devState->peakComposite = 0.0f;
-                    devState->clipSamples = 0U;
-                    devState->lastDiagLogMs = nowMs;
-                }
-            }
+        }
 
 #if defined(HAS_SOAPYSDR)
-            bool hwTxOk = false;
-            if (devState != nullptr)
-                hwTxOk = writeSoapyTx(dev, deviceTx[dev]);
-            if (!hwTxOk)
-                deviceRx[dev] = deviceTx[dev];
-#else
-            deviceRx[dev] = deviceTx[dev];
+        if (txDev < m_devices.size())
+            (void)writeSoapyTx(txDev, channelBuffer);
 #endif
-        }
-
-        ::usleep(BLOCK_MS * 1000U);
     }
 }
 
@@ -873,10 +858,26 @@ RadioManager::DeviceState RadioManager::makeDefaultDevice() const
 RadioManager::ChannelState* RadioManager::getChannel(uint8_t modemId)
 {
     std::lock_guard<std::mutex> lock(m_stateLock);
+
+    if (m_primaryModemValid) {
+        auto primaryIt = m_channels.find(m_primaryModemId);
+        if (primaryIt != m_channels.end())
+            return &primaryIt->second;
+    }
+
     auto it = m_channels.find(modemId);
-    if (it == m_channels.end())
+    if (it != m_channels.end()) {
+        m_primaryModemId = modemId;
+        m_primaryModemValid = true;
+        return &it->second;
+    }
+
+    if (m_channels.empty())
         return nullptr;
-    return &it->second;
+
+    m_primaryModemId = m_channels.begin()->first;
+    m_primaryModemValid = true;
+    return &m_channels.begin()->second;
 }
 
 #if defined(HAS_SOAPYSDR)
@@ -1018,7 +1019,7 @@ bool RadioManager::readSoapyRx(size_t devIdx, std::vector<std::complex<float>>& 
     void* buffs[1] = {iq.data()};
     int flags = 0;
     long long timeNs = 0LL;
-    const int ret = dev.soapyDevice->readStream(dev.rxStream, buffs, static_cast<int>(iq.size()), flags, timeNs, 200000);
+    const int ret = dev.soapyDevice->readStream(dev.rxStream, buffs, static_cast<int>(iq.size()), flags, timeNs, SOAPY_STREAM_TIMEOUT_US);
     if (ret <= 0) {
         ::LogWarning(LOG_SDR, "Soapy RX readStream failed on device %zu: %d (%s)", devIdx, ret, SoapySDR_errToStr(ret));
         return false;
@@ -1074,7 +1075,7 @@ bool RadioManager::writeSoapyTx(size_t devIdx, const std::vector<std::complex<fl
         }
 
         const size_t remaining = iq.size() - written;
-        const int ret = dev.soapyDevice->writeStream(dev.txStream, buffs, static_cast<int>(remaining), flags, timeNs, 200000);
+        const int ret = dev.soapyDevice->writeStream(dev.txStream, buffs, static_cast<int>(remaining), flags, timeNs, SOAPY_STREAM_TIMEOUT_US);
         if (ret == SOAPY_SDR_TIMEOUT) {
             timeoutRetries++;
             if (timeoutRetries >= MAX_TX_TIMEOUT_RETRIES) {

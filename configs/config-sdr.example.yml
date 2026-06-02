@@ -89,20 +89,18 @@ sdr:
         #rxCenterOffsetHz: 0
         #txCenterOffsetHz: 0
 
-    # Wideband channelization and transmission settings.
-    # Rebuild-free hot retune is used when only channel frequencies change.
+    # Single SDR device configuration.
     devices:
-        # Device 0: RTL-SDR (RX-only)
+        # Device 0: SoapySDR-compatible SDR
         - args: "driver=rtl,index=0"
 
-          # Wideband sample rate used for channelization and multi-carrier operation.
+          # SDR sample rate.
           sampleRate: 960000
 
           # Center-frequency correction in PPM.
           freqCorrPpm: 0
 
           # Optional per-device tuning center offsets (Hz).
-          # Example: keep RX channels ~25 kHz off DC spike.
           #rxCenterOffsetHz: 25000
           #txCenterOffsetHz: 0
 
@@ -126,56 +124,6 @@ sdr:
           #rxAntenna: ""
           #txAntenna: ""
 
-        # Device 1: USRP (TX+RX capable)
-        - args: "driver=uhd,addr=192.168.10.2"
-
-          # Wideband sample rate used for channelization and multi-carrier operation.
-          sampleRate: 960000
-
-          # Center-frequency correction in PPM.
-          freqCorrPpm: 0
-
-          # Optional per-device tuning center offsets (Hz).
-          #rxCenterOffsetHz: 25000
-          #txCenterOffsetHz: 0
-
-          # Gain controls (dB).
-          rxGain: 30
-          txGain: 30
-
-          # Optional Soapy gain stage names.
-          #rxGainElement: "LNA"
-          #txGainElement: "VGA"
-
-          # Optional Soapy bandwidth controls (Hz).
-          #rxBandwidth: 300000
-          #txBandwidth: 300000
-
-          # Optional Soapy timing/clock source controls.
-          #clockSource: "internal"
-          #timeSource: "internal"
-
-          # Optional antenna names (driver dependent; blank = default).
-          rxAntenna: ""
-          txAntenna: ""
-
-        # Device 2: bladeRF via SoapySDR
-        - args: "driver=bladerf"
-
-          sampleRate: 960000
-          freqCorrPpm: 0
-
-          rxGain: 30
-          txGain: 30
-
-          # Common bladeRF antenna paths:
-          #rxAntenna: "RX"
-          #txAntenna: "TX"
-
-          # Optional bladeRF gain stages:
-          #rxGainElement: "LNA"
-          #txGainElement: "VGA2"
-
 #
 # Virtual Modem Configuration
 #
@@ -191,27 +139,8 @@ modems:
       # SDR Radio
       #
       radio:
-        # Single-device assignment (applies to both RX and TX if rxDevice/txDevice are not set).
+        # Single-device assignment (1:1 modem to SDR).
         device: 0
-        # Optional explicit split assignment. Useful when RX SDR is receive-only (for example RTL-SDR).
-        #rxDevice: 0
-        #txDevice: 1
-    - protocol:
-        # UART/RS232 serial port device.
-        port: /tmp/dvm1
-        # UART/RS232 serial port speed. (The default speed of 115200, should not be
-        # changed unless the speed is also changed in the firmware of the modem.)
-        speed: 115200
-
-      #
-      # SDR Radio
-      #
-      radio:
-        # Single-device assignment (applies to both RX and TX if rxDevice/txDevice are not set).
-        device: 0
-        # Optional explicit split assignment. Useful when RX SDR is receive-only (for example RTL-SDR).
-        #rxDevice: 0
-        #txDevice: 1
 
 #
 # System Configuration

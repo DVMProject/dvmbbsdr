@@ -12,7 +12,7 @@
  * @file RadioManager.cpp
  * @ingroup modem_fw
  *
- * @brief Runtime SDR device and channel manager.
+ * @brief Runtime SDR device and single-carrier bridge.
  *
  * This manager owns GNU Radio flowgraphs and provides a queue bridge between
  * virtual modem instances and SDR hardware channels.
@@ -44,11 +44,9 @@ namespace SoapySDR { class Device; class Stream; }
 namespace radio
 {
     /**
-     * @brief Implements the RadioManager class, which manages SDR devices and channels, including their configuration,
-     *  runtime state, and interaction with GNU Radio flowgraphs. The RadioManager provides methods for initializing and
-     *  shutting down the SDR runtime environment, configuring channels, and bridging sample queues between modem 
-     *  instances and SDR hardware. It also handles runtime status publishing and diagnostics logging to facilitate 
-     *  monitoring and debugging of the SDR operation.
+     * @brief Implements the RadioManager class, which manages a single active SDR carrier and bridges modem sample
+     *  queues to SDR hardware. The runtime intentionally follows a single-carrier, MMDVM-IQ-style structure instead of
+     *  wideband or multi-carrier channelization.
      */
     class DSP_FW_API RadioManager {
     public:
@@ -87,7 +85,7 @@ namespace radio
         /**
          * @brief Helper to set the RF channel parameters for a specific modem channel. This method allows for dynamic reconfiguration
          *  of the channel's frequencies, RF power level, and polarity.
-         * @param modemId Modem ID of the channel to configure.
+         * @param modemId Modem ID of the active carrier.
          * @param rxFreq Receive frequency in Hz.
          * @param txFreq Transmit frequency in Hz.
          * @param rfPower RF power level hint.
@@ -97,7 +95,7 @@ namespace radio
         void setChannelParams(uint8_t modemId, uint32_t rxFreq, uint32_t txFreq, uint8_t rfPower, bool rxInvert, bool txInvert);
         /**
          * @brief Helper to configure AFC for a specific modem channel.
-         * @param modemId Modem ID of the channel to configure.
+         * @param modemId Modem ID of the active carrier.
          * @param enable True to enable AFC.
          * @param afcKI AFC integral gain parameter.
          * @param afcKP AFC proportional gain parameter.
@@ -108,7 +106,7 @@ namespace radio
          * @brief Helper to set the TX active state for a specific modem channel. This method is used to indicate whether 
          *  the channel is currently active for transmission, which affects whether samples from the channel's TX queue 
          *  are sent to the SDR hardware.
-         * @param modemId Modem ID of the channel to configure.
+         * @param modemId Modem ID of the active carrier.
          * @param active True to activate TX, false to deactivate.
          */
         void setChannelTxActive(uint8_t modemId, bool active);
@@ -118,7 +116,7 @@ namespace radio
          *  samples for transmission. The samples and corresponding control data are stored in the channel's TX queue, and 
          *  will be sent to the SDR hardware when the channel is active. The method returns the number of samples
          *  that were actually written to the queue and will be transmitted.
-         * @param modemId Modem ID of the channel to write to.
+         * @param modemId Modem ID of the active carrier.
          * @param samples Pointer to the array of samples to write.
          * @param control Pointer to the array of control data corresponding to the samples.
          * @param sampleCount Number of samples to write.
@@ -130,7 +128,7 @@ namespace radio
          *  samples that have been received from the SDR hardware. The method fills the provided pointers with the samples, 
          *  control data, and RSSI values from the channel's RX queue, up to a maximum defined by MAX_READ_SAMPLES. The 
          *  method returns the number of samples that were read from the queue and provided to the caller.
-         * @param modemId Modem ID of the channel to read from.
+         * @param modemId Modem ID of the active carrier.
          * @param samples Reference to a pointer that will be set to point to the array of samples read from the 
          *  channel's RX queue.
          * @param control Reference to a pointer that will be set to point to the array of control data corresponding to the 
@@ -151,8 +149,8 @@ namespace radio
             std::string args;
             double sampleRate;
             double rxGain;
-            double txGain;
             double rxBandwidth;
+            double txGain;
             double txBandwidth;
             double freqCorrPpm;
             double rxCenterOffsetHz;
@@ -261,6 +259,8 @@ namespace radio
         std::unordered_map<uint8_t, size_t> m_modemRxDevice;
         std::unordered_map<uint8_t, size_t> m_modemTxDevice;
         std::map<uint8_t, ChannelState> m_channels;
+        uint8_t m_primaryModemId;
+        bool m_primaryModemValid;
 
         /**
          * @brief Initializes a new instance of the RadioManager class.

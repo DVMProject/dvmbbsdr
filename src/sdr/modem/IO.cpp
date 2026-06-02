@@ -30,12 +30,10 @@ using namespace modem;
 
 #define RX_RF_REPORT_INTERVAL_MS 1000U
 
-#define TX_HANG_MS 250U            // hold TX across short producer gaps
+#define TX_HANG_MS 60U             // keep short burst continuity without long tail hold
 
 #define RX_DEBUG_LOG_INTERVAL_MS 500U
 
-#define RX_MODEM_SAMPLE_RATE 24000U
-#define RX_SAMPLE_BUDGET_MAX 700U          // max samples to buffer before we start dropping 
 #define TX_PROCESS_BLOCK_SAMPLES 240U      // match the RF runtime block size for lower latency
 
 // Generated using rcosdesign(0.2, 8, 5, 'sqrt') in MATLAB
