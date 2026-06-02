@@ -30,15 +30,13 @@ using namespace modem;
 
 #define RX_RF_REPORT_INTERVAL_MS 1000U
 
-#define TX_FRAME_SAMPLES 720U      // 30 ms at 24 kHz modem sample rate
-#define TX_FRAME_SLEEP_US 30000U   // pace one TX frame in real
 #define TX_HANG_MS 250U            // hold TX across short producer gaps
 
 #define RX_DEBUG_LOG_INTERVAL_MS 500U
 
 #define RX_MODEM_SAMPLE_RATE 24000U
-#define RX_MAX_BLOCKS_PER_PROCESS 720U     // process up to 30 ms of samples per call to keep latency low
 #define RX_SAMPLE_BUDGET_MAX 700U          // max samples to buffer before we start dropping 
+#define TX_PROCESS_BLOCK_SAMPLES 240U      // match the RF runtime block size for lower latency
 
 // Generated using rcosdesign(0.2, 8, 5, 'sqrt') in MATLAB
 static q15_t RRC_0_2_FILTER[] = {
@@ -135,8 +133,6 @@ IO::IO(modem::Modem* modem, bool debug) :
     m_threadRx(),
     m_rxLock(),
     m_threadStatus(),
-    m_audioBufTx(),
-    m_audioBufRx(),
     m_txLastActivityMs(0U),
     m_abort(false),
     m_rxRfLastDataMs(0U),
@@ -233,11 +229,6 @@ void IO::start()
 
 void IO::process()
 {
-    static uint64_t lastRxDebugLogMs = 0U;
-    static uint64_t lastRxDrainLimitLogMs = 0U;
-    static uint64_t lastRxBudgetUpdateMs = 0U;
-    static uint32_t rxSampleBudget = 0U;
-
     if (m_started) {
         // Two seconds timeout
         if (m_watchdog >= 48000U) {
@@ -255,31 +246,26 @@ void IO::process()
         return;
     }
 
+    interruptRx();
+
     // use the COS line to lockout the modem
     if (m_modem->m_cosLockoutEnable) {
         m_lockout = getCOSInt();
     }
 
-    // Deassert TX based on the ring buffer being empty plus a hang guard.
-    // m_audioBufTx is an internal staging area and may hold a partial frame
-    // that can never reach TX_FRAME_SAMPLES once the host stops writing;
-    // using it to gate the deassert decision causes TX to stay active forever.
     bool hasPendingTxRing = false;
     ::pthread_mutex_lock(&m_txLock);
     hasPendingTxRing = (m_txBuffer.getData() > 0U);
     ::pthread_mutex_unlock(&m_txLock);
 
+    const uint64_t nowMs = monotonicMs();
     if (m_modem->m_tx) {
-        if (!hasPendingTxRing) {
-            const uint64_t nowMs = monotonicMs();
+        if (hasPendingTxRing) {
+            interrupt();
+        } else {
             const bool txHangExpired = (m_txLastActivityMs == 0U) || ((nowMs - m_txLastActivityMs) >= TX_HANG_MS);
 
             if (txHangExpired) {
-                // flush any partial staging frame so txThreadHelper stops spinning.
-                ::pthread_mutex_lock(&m_txLock);
-                m_audioBufTx.clear();
-                ::pthread_mutex_unlock(&m_txLock);
-
                 m_modem->m_tx = false;
                 m_modem->setModemTxActive(false);
 
@@ -290,196 +276,6 @@ void IO::process()
         }
     } else {
         m_modem->setModemTxActive(false);
-    }
-
-    const uint64_t nowBudgetMs = monotonicMs();
-    if (lastRxBudgetUpdateMs == 0U)
-        lastRxBudgetUpdateMs = nowBudgetMs;
-
-    uint64_t elapsedMs = nowBudgetMs - lastRxBudgetUpdateMs;
-    lastRxBudgetUpdateMs = nowBudgetMs;
-    if (elapsedMs > 100U)
-        elapsedMs = 100U;
-
-    rxSampleBudget += static_cast<uint32_t>(elapsedMs * (RX_MODEM_SAMPLE_RATE / 1000U));
-    if (rxSampleBudget > RX_SAMPLE_BUDGET_MAX)
-        rxSampleBudget = RX_SAMPLE_BUDGET_MAX;
-
-    uint32_t drainedBlocks = 0U;
-    for (; drainedBlocks < RX_MAX_BLOCKS_PER_PROCESS && rxSampleBudget >= RX_BLOCK_SIZE && m_rxBuffer.getData() >= RX_BLOCK_SIZE;
-        drainedBlocks++) {
-        rxSampleBudget -= RX_BLOCK_SIZE;
-
-        q15_t samples[RX_BLOCK_SIZE];
-        uint8_t control[RX_BLOCK_SIZE];
-        uint16_t rssi[RX_BLOCK_SIZE];
-
-        for (uint16_t i = 0U; i < RX_BLOCK_SIZE; i++) {
-            q15_t sample = 0;
-            m_rxBuffer.get(sample, control[i]);
-            m_rssiBuffer.get(rssi[i]);
-
-            // Detect ADC overflow.
-            if (m_detect && (sample == 0U || sample == 4095U))
-                m_adcOverflow++;
-
-            q31_t res1 = sample * m_rxLevel;
-            samples[i] = q15_t(__SSAT((res1 >> 15), 16));
-
-            if (m_debug && rssi[i] > 1024) {
-                const uint64_t nowMs = monotonicMs();
-                if (lastRxDebugLogMs == 0U || (nowMs - lastRxDebugLogMs) >= RX_DEBUG_LOG_INTERVAL_MS) {
-                    lastRxDebugLogMs = nowMs;
-                    ::LogDebugEx(LOG_SDR, "IO::interruptRx()", "Modem %u (%s) RX SAMPLE, sample = %d, scaled = %d, control = %u, rssi = %u, rxLvlQ15 = %d",
-                        m_modem->m_modemId, m_modem->m_modemPty.c_str(), sample, samples[i], control[i], rssi[i], m_rxLevel);
-                }
-            }
-        }
-
-        if (m_lockout)
-            return;
-
-        q15_t dcSamples[RX_BLOCK_SIZE];
-        if (m_modem->m_dcBlockerEnable) {
-            q31_t q31Samples[RX_BLOCK_SIZE];
-
-            ::arm_q15_to_q31(samples, q31Samples, RX_BLOCK_SIZE);
-
-            q31_t dcValues[RX_BLOCK_SIZE];
-            ::arm_biquad_cascade_df1_q31(&m_dcFilter, q31Samples, dcValues, RX_BLOCK_SIZE);
-
-            q31_t dcLevel = 0;
-            for (uint8_t i = 0U; i < RX_BLOCK_SIZE; i++)
-                dcLevel += dcValues[i];
-            dcLevel /= RX_BLOCK_SIZE;
-
-            q15_t offset = q15_t(__SSAT((dcLevel >> 16), 16));;
-
-            for (uint8_t i = 0U; i < RX_BLOCK_SIZE; i++)
-                dcSamples[i] = samples[i] - offset;
-        }
-
-        /** Idle Modem State */
-        if (m_modem->m_modemState == STATE_IDLE) {
-            /** Project 25 */
-            if (m_modem->m_p25Enable) {
-                q15_t c4fmSamples[RX_BLOCK_SIZE];
-                if (m_modem->m_dcBlockerEnable) {
-                    ::arm_fir_fast_q15(&m_boxcar_5_Filter, dcSamples, c4fmSamples, RX_BLOCK_SIZE);
-                }
-                else {
-                    ::arm_fir_fast_q15(&m_boxcar_5_Filter, samples, c4fmSamples, RX_BLOCK_SIZE);
-                }
-
-                m_modem->m_p25RX.samples(c4fmSamples, rssi, RX_BLOCK_SIZE);
-            }
-
-            /** Digital Mobile Radio */
-            if (m_modem->m_dmrEnable) {
-                q15_t c4fmSamples[RX_BLOCK_SIZE];
-                ::arm_fir_fast_q15(&m_rrc_0_2_Filter, samples, c4fmSamples, RX_BLOCK_SIZE);
-
-                if (m_modem->m_dmrEnable) {
-                    if (m_modem->m_duplex)
-                        m_modem->m_dmrIdleRX.samples(c4fmSamples, RX_BLOCK_SIZE);
-                    else
-                        m_modem->m_dmrDMORX.samples(c4fmSamples, rssi, RX_BLOCK_SIZE);
-                }
-            }
-
-            /** Next Generation Digital Narrowband */
-            if (m_modem->m_nxdnEnable) {
-                q15_t c4fmSamples[RX_BLOCK_SIZE];
-#if NXDN_BOXCAR_FILTER
-                if (m_modem->m_dcBlockerEnable) {
-                    ::arm_fir_fast_q15(&m_boxcar_10_Filter, dcSamples, c4fmSamples, RX_BLOCK_SIZE);
-                }
-                else {
-                    ::arm_fir_fast_q15(&m_boxcar_10_Filter, samples, c4fmSamples, RX_BLOCK_SIZE);
-                }
-#else
-                q15_t c4fmRCSamples[RX_BLOCK_SIZE];
-                if (m_modem->m_dcBlockerEnable) {
-                    ::arm_fir_fast_q15(&m_nxdn_0_2_Filter, dcSamples, c4fmRCSamples, RX_BLOCK_SIZE);
-                }
-                else {
-                    ::arm_fir_fast_q15(&m_nxdn_0_2_Filter, samples, c4fmRCSamples, RX_BLOCK_SIZE);
-                }
-
-                ::arm_fir_fast_q15(&m_nxdn_ISinc_Filter, c4fmRCSamples, c4fmSamples, RX_BLOCK_SIZE);
-#endif
-                m_modem->m_nxdnRX.samples(c4fmSamples, rssi, RX_BLOCK_SIZE);
-            }
-        }
-        else if (m_modem->m_modemState == STATE_DMR) {        // DMR State
-            /** Digital Mobile Radio */
-            if (m_modem->m_dmrEnable) {
-                q15_t c4fmSamples[RX_BLOCK_SIZE];
-                ::arm_fir_fast_q15(&m_rrc_0_2_Filter, samples, c4fmSamples, RX_BLOCK_SIZE);
-
-                if (m_modem->m_duplex) {
-                    // If the transmitter isn't on, use the DMR idle RX to detect the wakeup CSBKs
-                    if (m_modem->m_tx)
-                        m_modem->m_dmrRX.samples(c4fmSamples, rssi, control, RX_BLOCK_SIZE);
-                    else
-                        m_modem->m_dmrIdleRX.samples(c4fmSamples, RX_BLOCK_SIZE);
-                }
-                else {
-                    m_modem->m_dmrDMORX.samples(c4fmSamples, rssi, RX_BLOCK_SIZE);
-                }
-            }
-        }
-        else if (m_modem->m_modemState == STATE_P25) {        // P25 State
-            /** Project 25 */
-            if (m_modem->m_p25Enable) {
-                q15_t c4fmSamples[RX_BLOCK_SIZE];
-                if (m_modem->m_dcBlockerEnable) {
-                    ::arm_fir_fast_q15(&m_boxcar_5_Filter, dcSamples, c4fmSamples, RX_BLOCK_SIZE);
-                }
-                else {
-                    ::arm_fir_fast_q15(&m_boxcar_5_Filter, samples, c4fmSamples, RX_BLOCK_SIZE);
-                }
-
-                m_modem->m_p25RX.samples(c4fmSamples, rssi, RX_BLOCK_SIZE);
-            }
-        }
-        else if (m_modem->m_modemState == STATE_NXDN) {       // NXDN State
-            /** Next Generation Digital Narrowband */
-            if (m_modem->m_nxdnEnable) {
-                q15_t c4fmSamples[RX_BLOCK_SIZE];
-#if NXDN_BOXCAR_FILTER
-                if (m_modem->m_dcBlockerEnable) {
-                    ::arm_fir_fast_q15(&m_boxcar_10_Filter, dcSamples, c4fmSamples, RX_BLOCK_SIZE);
-                }
-                else {
-                    ::arm_fir_fast_q15(&m_boxcar_10_Filter, samples, c4fmSamples, RX_BLOCK_SIZE);
-                }
-#else
-                q15_t c4fmRCSamples[RX_BLOCK_SIZE];
-                if (m_modem->m_dcBlockerEnable) {
-                    ::arm_fir_fast_q15(&m_nxdn_0_2_Filter, dcSamples, c4fmRCSamples, RX_BLOCK_SIZE);
-                }
-                else {
-                    ::arm_fir_fast_q15(&m_nxdn_0_2_Filter, samples, c4fmRCSamples, RX_BLOCK_SIZE);
-                }
-
-                ::arm_fir_fast_q15(&m_nxdn_ISinc_Filter, c4fmRCSamples, c4fmSamples, RX_BLOCK_SIZE);
-#endif
-                m_modem->m_nxdnRX.samples(c4fmSamples, rssi, RX_BLOCK_SIZE);
-            }
-        }
-        else if (m_modem->m_modemState == STATE_RSSI_CAL) {
-            m_modem->m_calRSSI.samples(rssi, RX_BLOCK_SIZE);
-        }
-    }
-
-    if (m_debug && (drainedBlocks >= RX_MAX_BLOCKS_PER_PROCESS || (m_rxBuffer.getData() >= RX_BLOCK_SIZE && rxSampleBudget < RX_BLOCK_SIZE))) {
-        const uint64_t nowMs = monotonicMs();
-        if (lastRxDrainLimitLogMs == 0U || (nowMs - lastRxDrainLimitLogMs) >= 1000U) {
-            lastRxDrainLimitLogMs = nowMs;
-            ::LogDebugEx(LOG_SDR, "IO::process()", "Modem %u (%s) RX drain limited, drainedBlocks = %u, budgetSamples = %u, pendingSamples = %u",
-                m_modem->m_modemId, m_modem->m_modemPty.c_str(), drainedBlocks, rxSampleBudget, m_rxBuffer.getData());
-        }
     }
 }
 
@@ -520,7 +316,7 @@ void IO::write(DVM_STATE mode, q15_t* samples, uint16_t length, const uint8_t* c
         break;
     }
 
-    // TX ring is consumed by the dedicated TX thread; writes must be serialized
+    // TX ring is consumed by the modem clock thread; writes must be serialized
     // with reads to prevent ring index corruption under load.
     ::pthread_mutex_lock(&m_txLock);
     for (uint16_t i = 0U; i < length; i++) {
@@ -781,10 +577,6 @@ void IO::startInt()
     ** TODO TODO TODO
     */
 
-    m_audioBufTx = std::vector<short>();
-    m_controlBufTx = std::vector<uint8_t>();
-    m_audioBufRx = std::vector<short>();
-
     if (::pthread_mutex_init(&m_txLock, NULL) != 0) {
         ::LogError(LOG_SDR, "Tx thread lock failed?");
         ::LogFinalise();
@@ -797,9 +589,6 @@ void IO::startInt()
         exit(-2);
     }
 
-    ::pthread_create(&m_threadTx, NULL, txThreadHelper, this);
-    ::pthread_create(&m_threadRx, NULL, rxThreadHelper, this);
-    ::pthread_create(&m_threadStatus, NULL, modemStatusHelper, this);
 }
 
 /*  */
@@ -862,114 +651,33 @@ void IO::delayInt(unsigned int dly)
 
 /*  */
 
-void* IO::modemStatusHelper(void* arg)
-{
-    IO* io = (IO*)arg;
-    if (io != nullptr) {
-        while (!io->m_abort) {
-            // log flag statuses
-            if (io->m_cosPrev != io->m_cosInt) {
-                ::LogInfoEx(LOG_SDR, "Modem %u (%s) COS %s", io->m_modem->m_modemId, io->m_modem->m_modemPty.c_str(), io->m_cosInt ? "DETECT" : "NO CARRIER");
-                io->m_cosPrev = io->m_cosInt;
-            }
-
-            if (io->m_pttPrev != io->m_ptt) {
-                ::LogInfoEx(LOG_SDR, "Modem %u (%s) PTT %s", io->m_modem->m_modemId, io->m_modem->m_modemPty.c_str(), io->m_ptt ? "TRANSMIT" : "IDLE");
-                io->m_pttPrev = io->m_ptt;
-            }
-
-            if (io->m_dmrModeToggle) {
-                ::LogInfoEx(LOG_SDR, "Modem %u (%s) DMR Mode %s", io->m_modem->m_modemId, io->m_modem->m_modemPty.c_str(), io->m_dmrMode ? "ENABLED" : "DISABLED");
-                io->m_dmrModeToggle = false;
-            }
-
-            if (io->m_p25ModeToggle) {
-                ::LogInfoEx(LOG_SDR, "Modem %u (%s) P25 Mode %s", io->m_modem->m_modemId, io->m_modem->m_modemPty.c_str(), io->m_p25Mode ? "ENABLED" : "DISABLED");
-                io->m_p25ModeToggle = false;
-            }
-
-            if (io->m_nxdnModeToggle) {
-                ::LogInfoEx(LOG_SDR, "Modem %u (%s) NXDN Mode %s", io->m_modem->m_modemId, io->m_modem->m_modemPty.c_str(), io->m_nxdnMode ? "ENABLED" : "DISABLED");
-                io->m_nxdnModeToggle = false;
-            }
-
-            ::usleep(1000U);
-        }
-    }
-
-    return nullptr;
-}
-
-/* Hardware interrupt handler. */
-
 void IO::interrupt()
 {
     int16_t sample = 0;
     uint8_t control = MARK_NONE;
+    int16_t txSamples[TX_PROCESS_BLOCK_SAMPLES];
+    uint8_t txControls[TX_PROCESS_BLOCK_SAMPLES];
+    size_t txCount = 0U;
 
     ::pthread_mutex_lock(&m_txLock);
     while (m_txBuffer.get(sample, control)) {
-        // FM mode: stage real samples and emit fixed-size frames at modem cadence.
-        m_audioBufTx.push_back(static_cast<short>(sample));
-        m_controlBufTx.push_back(control);
+        txSamples[txCount] = sample;
+        txControls[txCount] = control;
+        txCount++;
 
-        if (m_audioBufTx.size() >= TX_FRAME_SAMPLES) {
-            m_modem->transmitRFSamples(reinterpret_cast<const int16_t*>(m_audioBufTx.data()),
-                m_controlBufTx.data(), TX_FRAME_SAMPLES);
-
-            m_audioBufTx.erase(m_audioBufTx.begin(), m_audioBufTx.begin() + TX_FRAME_SAMPLES);
-            m_controlBufTx.erase(m_controlBufTx.begin(), m_controlBufTx.begin() + TX_FRAME_SAMPLES);
-            ::pthread_mutex_unlock(&m_txLock);
-            ::usleep(9600 * 3); // 9.6k baud for 30ms of samples to pace the modem correctly; TODO: replace with a more robust scheduler/timer mechanism
-            ::pthread_mutex_lock(&m_txLock);
+        if (txCount >= TX_PROCESS_BLOCK_SAMPLES) {
+            m_modem->transmitRFSamples(txSamples, txControls, txCount);
+            txCount = 0U;
         }
     }
-/*
-    // Ring buffer is now empty. If a partial frame remains in the staging buffer,
-    // zero-pad it to TX_FRAME_SAMPLES and flush it so it is never left stranded.
-    // Silence padding produces a clean end-of-burst tail for the FM modulator chain.
-    if (!m_audioBufTx.empty()) {
-        m_audioBufTx.resize(TX_FRAME_SAMPLES, 0);
-        m_modem->transmitFMSamples(reinterpret_cast<const uint8_t*>(m_audioBufTx.data()),
-            TX_FRAME_SAMPLES * sizeof(short));
-        m_audioBufTx.clear();
-    }
-*/
+
+    if (txCount > 0U)
+        m_modem->transmitRFSamples(txSamples, txControls, txCount);
+
     ::pthread_mutex_unlock(&m_txLock);
 
-    sample = 0;
     m_watchdog++;
 }
-
-/*  */
-
-void* IO::txThreadHelper(void* arg)
-{
-    IO* p = (IO*)arg;
-
-    while (!p->m_abort)
-    {
-        // Only gate on the ring buffer; m_audioBufTx is an internal staging area
-        // that may retain a partial frame after the host stops writing. Checking
-        // it here causes a busy-loop calling interrupt() with nothing to drain.
-        bool hasPendingTx = false;
-        ::pthread_mutex_lock(&p->m_txLock);
-        hasPendingTx = (p->m_txBuffer.getData() > 0U);
-        ::pthread_mutex_unlock(&p->m_txLock);
-
-        if (!hasPendingTx) {
-            // Keep refill latency below one scheduler millisecond to reduce FM queue starvation.
-            ::usleep(250U);
-            continue;
-        }
-
-        p->interrupt();
-    }
-
-    return NULL;
-}
-
-/*  */
 
 void IO::logRxRfSamples(uint32_t bytes, bool iqMode)
 {
@@ -993,37 +701,152 @@ void IO::logRxRfSamples(uint32_t bytes, bool iqMode)
 
 void IO::interruptRx()
 {
-    int16_t* samples = nullptr;
-    uint8_t* controls = nullptr;
-    uint16_t* rssi = nullptr;
-    int count = m_modem->readRFSamples(samples, controls, rssi);
-    if (count < 1 || samples == nullptr) {
-        return;
+    static uint64_t lastRxDebugLogMs = 0U;
+
+    for (;;) {
+        int16_t* samples = nullptr;
+        uint8_t* controls = nullptr;
+        uint16_t* rssi = nullptr;
+        const int count = m_modem->readRFSamples(samples, controls, rssi);
+        if (count < 1 || samples == nullptr)
+            break;
+
+        if (m_debug)
+            logRxRfSamples(static_cast<uint32_t>(count * sizeof(int16_t)), true);
+
+        for (int base = 0; base < count; base += RX_BLOCK_SIZE) {
+            q15_t blockSamples[RX_BLOCK_SIZE] = {0};
+            uint8_t blockControl[RX_BLOCK_SIZE] = {MARK_NONE, MARK_NONE};
+            uint16_t blockRssi[RX_BLOCK_SIZE] = {3U, 3U};
+
+            const int blockCount = std::min<int>(RX_BLOCK_SIZE, count - base);
+            for (int i = 0; i < blockCount; i++) {
+                const int idx = base + i;
+                const int16_t sample = samples[idx];
+                const uint8_t sampleControl = (controls != nullptr) ? controls[idx] : MARK_NONE;
+                const uint16_t sampleRssi = (rssi != nullptr) ? rssi[idx] : 3U;
+
+                // Detect ADC overflow.
+                if (m_detect && (sample == 0U || sample == 4095U))
+                    m_adcOverflow++;
+
+                q31_t res1 = sample * m_rxLevel;
+                blockSamples[i] = q15_t(__SSAT((res1 >> 15), 16));
+                blockControl[i] = sampleControl;
+                blockRssi[i] = sampleRssi;
+
+                if (m_debug && sampleRssi > 1024) {
+                    const uint64_t nowMs = monotonicMs();
+                    if (lastRxDebugLogMs == 0U || (nowMs - lastRxDebugLogMs) >= RX_DEBUG_LOG_INTERVAL_MS) {
+                        lastRxDebugLogMs = nowMs;
+                        ::LogDebugEx(LOG_SDR, "IO::interruptRx()", "Modem %u (%s) RX SAMPLE, sample = %d, scaled = %d, control = %u, rssi = %u, rxLvlQ15 = %d",
+                            m_modem->m_modemId, m_modem->m_modemPty.c_str(), sample, blockSamples[i], sampleControl, sampleRssi, m_rxLevel);
+                    }
+                }
+            }
+
+            if (m_lockout)
+                return;
+
+            q15_t dcSamples[RX_BLOCK_SIZE];
+            q15_t* activeSamples = blockSamples;
+            if (m_modem->m_dcBlockerEnable) {
+                q31_t q31Samples[RX_BLOCK_SIZE];
+
+                ::arm_q15_to_q31(blockSamples, q31Samples, RX_BLOCK_SIZE);
+
+                q31_t dcValues[RX_BLOCK_SIZE];
+                ::arm_biquad_cascade_df1_q31(&m_dcFilter, q31Samples, dcValues, RX_BLOCK_SIZE);
+
+                q31_t dcLevel = 0;
+                for (uint8_t i = 0U; i < RX_BLOCK_SIZE; i++)
+                    dcLevel += dcValues[i];
+                dcLevel /= RX_BLOCK_SIZE;
+
+                q15_t offset = q15_t(__SSAT((dcLevel >> 16), 16));
+
+                for (uint8_t i = 0U; i < RX_BLOCK_SIZE; i++)
+                    dcSamples[i] = blockSamples[i] - offset;
+
+                activeSamples = dcSamples;
+            }
+
+            /** Idle Modem State */
+            if (m_modem->m_modemState == STATE_IDLE) {
+                /** Project 25 */
+                if (m_modem->m_p25Enable) {
+                    q15_t c4fmSamples[RX_BLOCK_SIZE];
+                    ::arm_fir_fast_q15(&m_boxcar_5_Filter, activeSamples, c4fmSamples, RX_BLOCK_SIZE);
+                    m_modem->m_p25RX.samples(c4fmSamples, blockRssi, RX_BLOCK_SIZE);
+                }
+
+                /** Digital Mobile Radio */
+                if (m_modem->m_dmrEnable) {
+                    q15_t c4fmSamples[RX_BLOCK_SIZE];
+                    ::arm_fir_fast_q15(&m_rrc_0_2_Filter, blockSamples, c4fmSamples, RX_BLOCK_SIZE);
+
+                    if (m_modem->m_duplex)
+                        m_modem->m_dmrIdleRX.samples(c4fmSamples, RX_BLOCK_SIZE);
+                    else
+                        m_modem->m_dmrDMORX.samples(c4fmSamples, blockRssi, RX_BLOCK_SIZE);
+                }
+
+                /** Next Generation Digital Narrowband */
+                if (m_modem->m_nxdnEnable) {
+                    q15_t c4fmSamples[RX_BLOCK_SIZE];
+#if NXDN_BOXCAR_FILTER
+                    ::arm_fir_fast_q15(&m_boxcar_10_Filter, activeSamples, c4fmSamples, RX_BLOCK_SIZE);
+#else
+                    q15_t c4fmRCSamples[RX_BLOCK_SIZE];
+                    ::arm_fir_fast_q15(&m_nxdn_0_2_Filter, activeSamples, c4fmRCSamples, RX_BLOCK_SIZE);
+                    ::arm_fir_fast_q15(&m_nxdn_ISinc_Filter, c4fmRCSamples, c4fmSamples, RX_BLOCK_SIZE);
+#endif
+                    m_modem->m_nxdnRX.samples(c4fmSamples, blockRssi, RX_BLOCK_SIZE);
+                }
+            }
+            else if (m_modem->m_modemState == STATE_DMR) {
+                /** Digital Mobile Radio */
+                if (m_modem->m_dmrEnable) {
+                    q15_t c4fmSamples[RX_BLOCK_SIZE];
+                    ::arm_fir_fast_q15(&m_rrc_0_2_Filter, blockSamples, c4fmSamples, RX_BLOCK_SIZE);
+
+                    if (m_modem->m_duplex) {
+                        if (m_modem->m_tx)
+                            m_modem->m_dmrRX.samples(c4fmSamples, blockRssi, blockControl, RX_BLOCK_SIZE);
+                        else
+                            m_modem->m_dmrIdleRX.samples(c4fmSamples, RX_BLOCK_SIZE);
+                    }
+                    else {
+                        m_modem->m_dmrDMORX.samples(c4fmSamples, blockRssi, RX_BLOCK_SIZE);
+                    }
+                }
+            }
+            else if (m_modem->m_modemState == STATE_P25) {
+                /** Project 25 */
+                if (m_modem->m_p25Enable) {
+                    q15_t c4fmSamples[RX_BLOCK_SIZE];
+                    ::arm_fir_fast_q15(&m_boxcar_5_Filter, activeSamples, c4fmSamples, RX_BLOCK_SIZE);
+                    m_modem->m_p25RX.samples(c4fmSamples, blockRssi, RX_BLOCK_SIZE);
+                }
+            }
+            else if (m_modem->m_modemState == STATE_NXDN) {
+                /** Next Generation Digital Narrowband */
+                if (m_modem->m_nxdnEnable) {
+                    q15_t c4fmSamples[RX_BLOCK_SIZE];
+#if NXDN_BOXCAR_FILTER
+                    ::arm_fir_fast_q15(&m_boxcar_10_Filter, activeSamples, c4fmSamples, RX_BLOCK_SIZE);
+#else
+                    q15_t c4fmRCSamples[RX_BLOCK_SIZE];
+                    ::arm_fir_fast_q15(&m_nxdn_0_2_Filter, activeSamples, c4fmRCSamples, RX_BLOCK_SIZE);
+                    ::arm_fir_fast_q15(&m_nxdn_ISinc_Filter, c4fmRCSamples, c4fmSamples, RX_BLOCK_SIZE);
+#endif
+                    m_modem->m_nxdnRX.samples(c4fmSamples, blockRssi, RX_BLOCK_SIZE);
+                }
+            }
+            else if (m_modem->m_modemState == STATE_RSSI_CAL) {
+                m_modem->m_calRSSI.samples(blockRssi, RX_BLOCK_SIZE);
+            }
+        }
     }
-
-    if (m_debug)
-        logRxRfSamples(static_cast<uint32_t>(count * sizeof(int16_t)), true);
-
-    ::pthread_mutex_lock(&m_rxLock);
-
-    for (int i = 0; i < count; i++) {
-        const int16_t sample = samples[i];
-        const uint8_t sampleControl = (controls != nullptr) ? controls[i] : MARK_NONE;
-        const uint16_t sampleRssi = (rssi != nullptr) ? rssi[i] : 3U;
-        m_rxBuffer.put(sample, sampleControl);
-        m_rssiBuffer.put(sampleRssi);
-    }
-    ::pthread_mutex_unlock(&m_rxLock);
 }
 
-/*  */
-
-void* IO::rxThreadHelper(void* arg)
-{
-    IO* p = (IO*)arg;
-
-    while (!p->m_abort)
-        p->interruptRx();
-
-    return NULL;
-}

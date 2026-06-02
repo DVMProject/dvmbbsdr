@@ -310,10 +310,6 @@ namespace modem
         pthread_mutex_t m_rxLock;
         pthread_t m_threadStatus;
 
-        std::vector<short> m_audioBufTx;
-        std::vector<uint8_t> m_controlBufTx;
-        std::vector<short> m_audioBufRx;
-
         // Keep TX asserted briefly across short production gaps to avoid PTT chatter.
         uint64_t m_txLastActivityMs;
 
@@ -385,23 +381,9 @@ namespace modem
         void delayInt(unsigned int dly);
 
         /**
-         * @brief 
-         * @param arg 
-         * @return void* 
-         */
-        static void* modemStatusHelper(void* arg);
-
-        /**
          * @brief Hardware interrupt handler.
          */
         void interrupt();
-
-        /**
-         * @brief 
-         * @param arg 
-         * @returns void* 
-         */
-        static void* txThreadHelper(void* arg);
 
         /**
          * @brief Updates RX activity counters and emits throttled debug logs while SDR samples flow.
@@ -415,12 +397,6 @@ namespace modem
          * @param interruptRx 
          */
         void interruptRx();
-        /**
-         * @brief 
-         * @param arg 
-         * @returns void* 
-         */
-        static void* rxThreadHelper(void* arg);
     };
 } // namespace modem
 

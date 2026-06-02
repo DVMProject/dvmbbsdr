@@ -739,7 +739,7 @@ void RadioManager::runtimeLoop()
                 int16_t txSample = 0;
                 uint8_t txControl = 0U;
                 bool haveTxSample = false;
-                if (channel->txActive && !channel->txSamples.empty()) {
+                if (!channel->txSamples.empty()) {
                     txSample = channel->txSamples.front();
                     channel->txSamples.pop_front();
 
