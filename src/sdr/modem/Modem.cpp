@@ -225,8 +225,7 @@ void* Modem::threadClock(void* arg)
 
 void Modem::setRFChannel(uint32_t rxFreq, uint32_t txFreq, uint8_t rfPower, bool rxInvert, bool txInvert)
 {
-    radio::RadioManager::instance().setChannelPolarity(m_modemId, rxInvert, txInvert);
-    radio::RadioManager::instance().setChannelParams(m_modemId, rxFreq, txFreq, rfPower);
+    radio::RadioManager::instance().setChannelParams(m_modemId, rxFreq, txFreq, rfPower, rxInvert, txInvert);
 }
 
 /* Helper to set the modem TX activity state. */
@@ -240,12 +239,12 @@ void Modem::setModemTxActive(bool active)
 
 int Modem::readRFSamples(int16_t*& samples, uint8_t*& control, uint16_t*& rssi)
 {
-    return radio::RadioManager::instance().popChannelRxSamples(m_modemId, samples, control, rssi);
+    return radio::RadioManager::instance().readChannelRxSamples(m_modemId, samples, control, rssi);
 }
 
 /* Queue RF samples for IQ modulation/transmit. */
 
 void Modem::transmitRFSamples(const int16_t* samples, const uint8_t* control, size_t sampleCount)
 {
-    radio::RadioManager::instance().pushChannelTxSamples(m_modemId, samples, control, sampleCount);
+    radio::RadioManager::instance().writeChannelTxSamples(m_modemId, samples, control, sampleCount);
 }

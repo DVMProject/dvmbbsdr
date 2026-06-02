@@ -21,6 +21,7 @@
 #define __RADIO_MANAGER_H__
 
 #include "Defines.h"
+#include "radio/FDUDC.h"
 #include "common/yaml/Yaml.h"
 
 #include <atomic>
@@ -28,6 +29,7 @@
 #include <cstdint>
 #include <complex>
 #include <deque>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -35,53 +37,48 @@
 #include <unordered_map>
 #include <vector>
 
+#if defined(HAS_SOAPYSDR)
+namespace SoapySDR { class Device; class Stream; }
+#endif
+
 namespace radio
 {
     /**
      * @brief Implements the RadioManager class, which manages SDR devices and channels, including their configuration,
-     * runtime state, and interaction with GNU Radio flowgraphs. The RadioManager provides methods for initializing and
-     * shutting down the SDR runtime environment, configuring channels, and bridging sample queues between modem 
-     * instances and SDR hardware. It also handles runtime status publishing and diagnostics logging to facilitate 
-     * monitoring and debugging of the SDR operation.
+     *  runtime state, and interaction with GNU Radio flowgraphs. The RadioManager provides methods for initializing and
+     *  shutting down the SDR runtime environment, configuring channels, and bridging sample queues between modem 
+     *  instances and SDR hardware. It also handles runtime status publishing and diagnostics logging to facilitate 
+     *  monitoring and debugging of the SDR operation.
      */
     class DSP_FW_API RadioManager {
     public:
         /**
          * @brief Gets the singleton instance of the RadioManager. This method ensures that only one instance of the
-         * RadioManager exists throughout the application, providing a centralized point of access for managing SDR devices
-         * and channels. The instance is lazily initialized on the first call to this method, and subsequent calls will return the same instance.
+         *  RadioManager exists throughout the application, providing a centralized point of access for managing SDR devices
+         *  and channels. The instance is lazily initialized on the first call to this method, and subsequent calls will return the same instance.
          * @returns RadioManager& Reference to the singleton instance of the RadioManager.
          */
         static RadioManager& instance();
 
         /**
-         * @brief Initializes the RadioManager with the given configuration. This method sets up the SDR devices and channels
-         * based on the provided YAML configuration, starts the GNU Radio flowgraphs for each device, and begins publishing 
-         * runtime status. It must be called before any other methods to ensure the RadioManager is properly set up.
+         * @brief Initializes the RadioManager with the given configuration and debug flag. This method sets up the SDR devices
+         *  and channels based on the provided YAML configuration, and starts the runtime thread for managing SDR
+         *  operation. The debug flag enables verbose logging for troubleshooting and development purposes. It is important to 
+         *  call this method before using any other functionality of the RadioManager to ensure that the SDR environment is properly set up.
          * @param conf YAML node containing the configuration for the SDR devices and channels.
-         * @param debug True to enable debug logging, false to disable it. Debug logging may include additional 
-         * information about the internal operation of the RadioManager, which can be useful for troubleshooting and development.
+         * @param debug Boolean flag to enable or disable debug logging.
          * @returns bool True if initialization was successful, otherwise false.
          */
         bool initialize(yaml::Node& conf, bool debug);
         /**
-         * @brief Shuts down the RadioManager, stopping all GNU Radio flowgraphs, clearing channel queues, and releasing 
-         * resources. This method should be called when the SDR runtime is no longer needed to ensure a clean shutdown 
-         * and resource release.
+         * @brief Shuts down the RadioManager, stopping all SDR devices and channels, and cleaning up resources.
+         * This method should be called when the RadioManager is no longer needed to ensure a clean shutdown of the SDR runtime environment.
          */
         void shutdown();
 
         /**
-         * @brief Sets the debug mode for the RadioManager. When debug mode is enabled, the RadioManager may log additional
-         * information about its operation, which can be useful for troubleshooting and development. This method can be called at any time to enable or disable debug logging.
-         * @param debug True to enable debug mode, false to disable it.
-         */
-        void setDebug(bool debug);
-
-        /**
          * @brief Helper to set the RF channel polarity for a specific modem channel. This method allows for dynamic reconfiguration
-         * of the channel's RX and TX polarity for RF path integration with different hardware chains.
-         * The changes will take effect immediately in the GNU Radio flowgraph.
+         *  of the channel's RX and TX polarity for RF path integration with different hardware chains.
          * @param modemId Modem ID of the channel to configure.
          * @param rxInvert True to invert the RX polarity, false for normal polarity.
          * @param txInvert True to invert the TX polarity, false for normal polarity.
@@ -89,14 +86,15 @@ namespace radio
         void setChannelPolarity(uint8_t modemId, bool rxInvert, bool txInvert);
         /**
          * @brief Helper to set the RF channel parameters for a specific modem channel. This method allows for dynamic reconfiguration
-         * of the channel's frequencies, RF power level, and polarity. The changes will take effect immediately in the GNU Radio 
-         * flowgraph, allowing for flexible operation of the SDR channels.
+         *  of the channel's frequencies, RF power level, and polarity.
          * @param modemId Modem ID of the channel to configure.
          * @param rxFreq Receive frequency in Hz.
          * @param txFreq Transmit frequency in Hz.
          * @param rfPower RF power level hint.
+         * @param rxInvert Boolean flag to invert the receive signal.
+         * @param txInvert Boolean flag to invert the transmit signal.
          */
-        void setChannelParams(uint8_t modemId, uint32_t rxFreq, uint32_t txFreq, uint8_t rfPower);
+        void setChannelParams(uint8_t modemId, uint32_t rxFreq, uint32_t txFreq, uint8_t rfPower, bool rxInvert, bool txInvert);
         /**
          * @brief Helper to configure AFC for a specific modem channel.
          * @param modemId Modem ID of the channel to configure.
@@ -105,146 +103,164 @@ namespace radio
          * @param afcKP AFC proportional gain parameter.
          * @param afcRange AFC correction range parameter.
          */
-        void setChannelAFC(uint8_t modemId, bool enable, uint8_t afcKI, uint8_t afcKP, uint8_t afcRange);
+        void setChannelAFC(uint8_t modemId, bool enabled, uint8_t ki, uint8_t kp, uint8_t range);
         /**
          * @brief Helper to set the TX active state for a specific modem channel. This method is used to indicate whether 
-         * the channel is currently active for transmission, which affects whether samples from the channel's TX queue 
-         * are sent to the SDR hardware. When a channel is set to active, the GNU Radio flowgraph will output samples 
-         * from the channel's TX queue.
+         *  the channel is currently active for transmission, which affects whether samples from the channel's TX queue 
+         *  are sent to the SDR hardware.
          * @param modemId Modem ID of the channel to configure.
          * @param active True to activate TX, false to deactivate.
          */
         void setChannelTxActive(uint8_t modemId, bool active);
 
         /**
-         * @brief Helper to push TX samples and their control flags to a channel queue.
-         * @param modemId Modem ID of the channel to which the samples should be pushed.
-         * @param samples Buffer containing signed 16-bit discriminator/baseband samples.
-         * @param control Optional per-sample control marks. If null, MARK_NONE is assumed.
-         * @param sampleCount Number of samples in the input buffers.
+         * @brief Writes samples to the TX queue of a specific modem channel. This method is called by modem instances to queue
+         *  samples for transmission. The samples and corresponding control data are stored in the channel's TX queue, and 
+         *  will be sent to the SDR hardware when the channel is active. The method returns the number of samples
+         *  that were actually written to the queue and will be transmitted.
+         * @param modemId Modem ID of the channel to write to.
+         * @param samples Pointer to the array of samples to write.
+         * @param control Pointer to the array of control data corresponding to the samples.
+         * @param sampleCount Number of samples to write.
+         * @returns size_t Number of samples actually written to the channel's TX queue.
          */
-        void pushChannelTxSamples(uint8_t modemId, const int16_t* samples, const uint8_t* control, size_t sampleCount);
+        size_t writeChannelTxSamples(uint8_t modemId, const int16_t* samples, const uint8_t* control, size_t sampleCount);
         /**
-         * @brief Helper to pop RX samples from a channel queue.
-         * @param modemId Modem ID of the channel from which to pop samples.
-         * @param samples Pointer to popped sample vector scratch memory.
-         * @param control Pointer to popped control vector scratch memory.
-         * @param rssi Pointer to popped RSSI vector scratch memory.
-         * @returns int Number of samples popped.
+         * @brief Reads samples from the RX queue of a specific modem channel. This method is called by modem instances to retrieve
+         *  samples that have been received from the SDR hardware. The method fills the provided pointers with the samples, 
+         *  control data, and RSSI values from the channel's RX queue, up to a maximum defined by MAX_READ_SAMPLES. The 
+         *  method returns the number of samples that were read from the queue and provided to the caller.
+         * @param modemId Modem ID of the channel to read from.
+         * @param samples Reference to a pointer that will be set to point to the array of samples read from the 
+         *  channel's RX queue.
+         * @param control Reference to a pointer that will be set to point to the array of control data corresponding to the 
+         *  samples read from the channel's RX queue.
+         * @param rssi Reference to a pointer that will be set to point to the array of RSSI values corresponding to the 
+         *  samples read from the channel's RX queue.
+         * @returns int Number of samples actually read from the channel's RX queue.
          */
-        int popChannelRxSamples(uint8_t modemId, int16_t*& samples, uint8_t*& control, uint16_t*& rssi);
-
-        /**
-         * @brief Helper to dequeue IQ samples from a channel's TX queue for GNU Radio.
-         * @param modemId Modem ID of the channel from which to dequeue samples.
-         * @param dst Buffer to store dequeued complex IQ samples.
-         * @param sampleCount Maximum number of samples to dequeue.
-         * @returns size_t Number of IQ samples dequeued.
-         */
-        size_t dequeueChannelTxIqSamples(uint8_t modemId, std::complex<float>* dst, size_t sampleCount);
-        /**
-         * @brief Helper to enqueue IQ samples from GNU Radio RX into a channel's shim.
-         * @param modemId Modem ID of the channel to which the samples should be enqueued.
-         * @param src Buffer containing complex IQ samples to enqueue.
-         * @param sampleCount Number of samples in the buffer to enqueue.
-         */
-        void enqueueChannelRxIqSamples(uint8_t modemId, const std::complex<float>* src, size_t sampleCount);
-
-        /**
-         * @brief Helper to check if a channel is active for transmission. This method allows modem instances to query the 
-         * current TX active state of a specific channel, which can be used to determine whether samples pushed to the 
-         * channel's TX queue will be transmitted to the SDR hardware.
-         * @param modemId Modem ID of the channel to check.
-         * @returns bool True if the channel is active for transmission, false otherwise.
-         */
-        bool isChannelTxActive(uint8_t modemId);
+        int readChannelRxSamples(uint8_t modemId, int16_t*& samples, uint8_t*& control, uint16_t*& rssi);
 
     private:
         /**
          * @brief Structure to hold the state of a single SDR channel, including its configuration parameters, 
-         * sample queues, and runtime statistics. This structure is used internally by the RadioManager to manage the 
-         * state of each channel and facilitate the queuing of samples for transmission and reception.
+         *  sample queues, and runtime statistics. This structure is used internally by the RadioManager to manage the 
+         *  state of each channel and facilitate the queuing of samples for transmission and reception.
          */
         struct DeviceState {
-            size_t index;
             std::string args;
             double sampleRate;
             double rxGain;
             double txGain;
+            double rxBandwidth;
+            double txBandwidth;
             double freqCorrPpm;
+            double rxCenterOffsetHz;
+            double txCenterOffsetHz;
+            double rxCenterHz;
+            double txCenterHz;
             std::string rxAntenna;
             std::string txAntenna;
-            bool canTx;
+            std::string clockSource;
+            std::string timeSource;
+            std::string rxGainElement;
+            std::string txGainElement;
 
-            std::string rxIqTapAddress;
+#if defined(HAS_SOAPYSDR)
+            SoapySDR::Device* soapyDevice;
+            SoapySDR::Stream* rxStream;
+            SoapySDR::Stream* txStream;
+            bool timestamped;
+            bool streamActive;
+            long long txTimeNs;
+            long long txLatencyNs;
+            long long lastRxTimeNs;
+            bool lastRxTimeValid;
+#endif
 
-            int32_t rxCenterOffsetHz;
-            int32_t txCenterOffsetHz;
+            uint32_t hwToModemDecim;
+            uint32_t modemToHwInterp;
 
-            uint32_t rxCenter;
-            uint32_t txCenter;
-            uint32_t assignedRxChannels;
-            uint32_t assignedTxChannels;
+            uint64_t lastDiagLogMs;
+            uint64_t clipSamples;
+            float peakComposite;
+            double minCarrierSpacingHz;
+            double occupiedBandwidthHz;
+            bool guardBandViolated;
         };
 
         /**
          * @brief Structure to hold the state of a single modem channel, including its assigned RX and TX devices,
-         * sample queues, and runtime statistics. This structure is used internally by the RadioManager to manage the 
-         * state of each modem channel and facilitate the queuing of samples for transmission and reception.
+         *  sample queues, and runtime statistics. This structure is used internally by the RadioManager to manage the 
+         *  state of each modem channel and facilitate the queuing of samples for transmission and reception.
          */
         struct ChannelState {
             uint8_t modemId;
-            int rxDevice;
-            int txDevice;
+            size_t rxDevice;
+            size_t txDevice;
 
             uint32_t rxFreq;
             uint32_t txFreq;
             uint8_t rfPower;
+
             bool rxInvert;
             bool txInvert;
             bool txActive;
 
-            std::deque<int16_t> txSampleQueue;
-            std::deque<uint8_t> txControlQueue;
-
-            std::deque<int16_t> rxSampleQueue;
-            std::deque<uint8_t> rxControlQueue;
-            std::deque<uint16_t> rxRssiQueue;
-
-            std::vector<int16_t> rxSampleScratch;
-            std::vector<uint8_t> rxControlScratch;
-            std::vector<uint16_t> rxRssiScratch;
-
-            uint32_t txPhase;
-            std::complex<float> prevRxIq;
-            std::deque<uint8_t> delayedControl;
-            uint8_t rxDiscrDecimCount;
-            long rxDiscrAccum;
-            float rxDiscrDcEstimate;
-            int32_t rxHostFreqOffsetCompHz;
-            bool afcEnable;
+            bool afcEnabled;
             uint8_t afcKI;
             uint8_t afcKP;
             uint8_t afcRange;
-            double afcErrorAccum;
-            double afcIntegrator;
-            uint32_t afcSampleCount;
-            int32_t rxAfcOffsetHz;
 
-            uint64_t txInputSamples;
-            uint64_t txZeroFillSamples;
-            uint64_t rxSamples;
-            uint64_t rxRssiClampSamples;
-            uint32_t rxRawRssiMin;
-            uint32_t rxRawRssiMax;
-            uint16_t rxSampleAbsPeak;
-            uint64_t rxControlAlignedSamples;
-            uint64_t rxControlDeferredSamples;
-            size_t maxDelayedControlDepth;
+            double rxOffsetHz;
+            double txOffsetHz;
 
-            uint64_t droppedRxBytes;
-            uint64_t droppedTxBytes;
+            int32_t txPhaseWord;
+            float txNcoPhase;
+            float txNcoStep;
+
+            std::complex<float> prevRx;
+            float rxNcoPhase;
+            float rxNcoStep;
+
+            std::unique_ptr<FDUDC> fdudc;
+            uint32_t fdudcNum;
+            uint32_t fdudcDen;
+            size_t controlDelaySamples;
+
+            int16_t txHoldSample;
+            uint8_t txHoldControl;
+            uint32_t txInterpCounter;
+
+            uint32_t rxDecimCounter;
+            float rxDecimAcc;
+            float rxRssiAcc;
+            uint32_t rxRssiCount;
+
+            std::deque<int16_t> txSamples;
+            std::deque<uint8_t> txControl;
+            std::deque<uint8_t> delayedControl;
+            std::deque<int16_t> rxSamples;
+            std::deque<uint8_t> rxControl;
+            std::deque<uint16_t> rxRssi;
+
+            std::vector<int16_t> readSamples;
+            std::vector<uint8_t> readControl;
+            std::vector<uint16_t> readRssi;
+
+            std::mutex lock;
         };
+
+        std::atomic<bool> m_running;
+        bool m_debug;
+
+        std::thread m_runtimeThread;
+        std::mutex m_stateLock;
+
+        std::vector<DeviceState> m_devices;
+        std::unordered_map<uint8_t, size_t> m_modemRxDevice;
+        std::unordered_map<uint8_t, size_t> m_modemTxDevice;
+        std::map<uint8_t, ChannelState> m_channels;
 
         /**
          * @brief Initializes a new instance of the RadioManager class.
@@ -259,106 +275,105 @@ namespace radio
         RadioManager& operator=(const RadioManager&) = delete;
 
         /**
-         * @brief Helper to ensure a channel state exists for a given modem ID. This method checks if a channel state already exists
-         * for the specified modem ID, and if not, it creates a new channel state with default values and adds it to the 
-         * channel map. This ensures that there is always a valid channel state for any modem ID that is accessed,
-         * simplifying the logic for channel management and sample queuing.
-         * @param modemId Modem ID for which to ensure a channel state exists.
-         * @returns ChannelState& Reference to the channel state associated with the specified modem ID.
+         * @brief Parses the YAML configuration to set up the SDR devices and channels. This method reads the configuration
+         *  parameters for each device and channel from the provided YAML node, and initializes the internal state of the 
+         *  RadioManager accordingly. It also performs any necessary setup for the SDR devices based on the configuration, 
+         *  such as initializing SoapySDR devices. This method is called during initialization of the RadioManager 
+         *  to configure the SDR environment based on the provided configuration file.
+         * @param conf YAML node containing the configuration for the SDR devices and channels.
          */
-        ChannelState& ensureChannel(uint8_t modemId);
+        void parseConfig(yaml::Node& conf);
+
         /**
-         * @brief Helper to parse the SDR configuration from a YAML node. This method reads the SDR configuration 
-         * parameters from the provided YAML node, initializes the device and channel states accordingly, and prepares 
-         * the RadioManager for starting the GNU Radio flowgraphs. The configuration includes parameters for each SDR 
-         * device, such as sample rate and gain, as well as the assignment of modem channels to specific devices and 
-         * channel bindings.
-         * @param conf YAML node containing the SDR configuration.
-         * @returns bool True if the configuration was parsed successfully, otherwise false.
-         */
-        bool parseConfig(yaml::Node& conf);
-        /**
-         * @brief Helper to recompute the center frequencies for each SDR device based on the assigned channels. This method
-         * iterates through all the channels assigned to each device, determines the minimum and maximum frequencies for 
-         * both RX and TX, and calculates the center frequency as the average of the min and max. This is used to set 
-         * the center frequency for the GNU Radio flowgraph, which can help optimize performance and reduce CPU load.
+         * @brief Recomputes the center frequencies for each SDR device based on the assigned channels and their 
+         *  frequencies. This method is called whenever the channel configuration changes (e.g. frequencies, device 
+         *  assignments) to ensure that the SDR devices are tuned to the appropriate center frequencies to accommodate 
+         *  the assigned channels. It calculates the minimum and maximum frequencies for each device based on the 
+         *  channels assigned to it, and sets the device center frequency to the midpoint of that range. This allows 
+         *  for proper operation of the SDR devices and ensures that the channels are correctly centered within the 
+         *  device's tuning range.
          */
         void recomputeDeviceCenters();
         /**
-         * @brief Helper to start the GNU Radio flowgraphs for all configured SDR devices. This method creates and configures the
-         * GNU Radio flowgraph for each device based on the device state and assigned channels, and starts the flowgraph to 
-         * begin processing samples. It also sets up the IQ/sample shim blocks used by the channel queues.
+         * @brief Updates the channel frequency offsets based on the current device center frequencies. This method is called
+         *  after recomputing the device centers to calculate the frequency offset for each channel relative to
+         *  its assigned device's center frequency. This ensures that each channel operates at the correct frequency
+         *  within the device's tuning range.
          */
-        void startRadios();
+        void updateChannelOffsets();
         /**
-         * @brief Helper to stop the GNU Radio flowgraphs for all SDR devices. This method stops and cleans up the GNU Radio flowgraph
-         * for each device, ensuring that all resources are released and the flowgraphs are properly shut down.
+         * @brief Updates the channel spacing metrics for diagnostics and monitoring. This method calculates metrics 
+         *  such as the minimum carrier spacing, occupied bandwidth, and guard band violations for the configured channels. 
+         *  These metrics are used for diagnostics logging and can be published via ZeroMQ for real-time monitoring of the 
+         *  SDR operation. This method should be called whenever the channel configuration changes to ensure that the 
+         *  metrics are up to date.
          */
-        void stopRadios();
+        void updateChannelSpacingMetrics();
+        
         /**
-         * @brief Helper to apply retuning of the SDR devices based on any changes to the channel frequencies. This method is called when
-         * channel parameters are updated, and it checks if the center frequencies for any devices need to be recalculated 
-         * and applied to the GNU Radio flowgraphs. This allows for dynamic retuning of the SDR devices without needing to restart the flowgraphs.
+         * @brief Main runtime loop for the RadioManager. This method runs in a separate thread and is responsible for 
+         *  managing the operation of the SDR devices and channels, including processing sample queues, handling device 
+         *  I/O, and performing diagnostics logging. The loop continues running until the RadioManager is shut down, at 
+         *  which point it will cleanly exit and allow the thread to join. This method is the core of the RadioManager's 
+         *  runtime behavior and should be designed to efficiently manage the SDR operation while minimizing latency 
+         *  and ensuring timely processing of samples.
          */
-        void applyRetune();
-
-        /**
-         * @brief Helper to start the radio status publisher thread. This method initializes and starts a background thread that periodically
-         * publishes the radio status of the RadioManager, including information about the devices, channels, and any 
-         * diagnostics. The status is published to a configured address and topic, allowing for external monitoring of
-         * the RadioManager's state.
-         */
-        void startRadioStatusPublisher();
-        /**
-         * @brief Helper to stop the radio status publisher thread. This method signals the background thread responsible for publishing radio status to stop,
-         * and waits for the thread to finish before returning. This ensures a clean shutdown of the status publisher
-         * thread and prevents any potential issues with dangling threads or resources.
-         */
-        void stopRadioStatusPublisher();
-        /**
-         * @brief Helper to publish the radio status of the RadioManager. This method gathers information about the current
-         * state of the devices, channels, and any diagnostics, and publishes this information to the configured address 
-         * and topic. This allows for external monitoring of the RadioManager's state and can be useful for debugging 
-         * and performance monitoring.
-         */
-        void publishRadioStatus();
-        /**
-         * @brief Helper to build a JSON string representing the current radio status of the RadioManager. This method collects
-         * information about the devices, channels, and diagnostics, and formats it into a JSON string that can be published
-         * to the status topic. The JSON includes details such as device configurations, channel assignments, sample queue lengths, and any relevant diagnostics.
-         * @returns std::string JSON string representing the current radio status of the RadioManager.
-         */
-        std::string buildRadioStatusJson() const;
+        void runtimeLoop();
 
         /**
-         * @brief Helper to log radio diagnostics at regular intervals. This method checks if a certain amount of time has passed since the last diagnostics log,
-         * and if so, it gathers diagnostic information about the devices and channels and logs it. This can include 
-         * information such as sample queue lengths, dropped samples, and any errors or warnings. Regular logging of 
-         * diagnostics can help identify performance issues or bottlenecks in the SDR operation.
-         * @param nowMs Current time in milliseconds, used to determine if it's time to log diagnostics.
+         * @brief Creates a default device state with standard parameters. This method is used to initialize the 
+         *  RadioManager with a default device configuration in case no devices are specified in the configuration file. 
+         *  The default device state includes standard parameters that are suitable for general use, and can be overridden 
+         *  by the configuration file if specific parameters are provided.
          */
-        void logRadioDiagnostics(uint64_t nowMs);
+        DeviceState makeDefaultDevice() const;
+        /**
+         * @brief Retrieves a pointer to the ChannelState for a given modem ID. This method is used internally by the 
+         *  RadioManager to access the state of a specific modem channel based on its modem ID. The returned pointer 
+         *  can be used to read or modify the channel's state, including its configuration parameters, sample queues, 
+         *  and runtime statistics.
+         */
+        ChannelState* getChannel(uint8_t modemId);
 
-        struct RuntimeContext;
+    #if defined(HAS_SOAPYSDR)
+        /**
+         * @brief Starts a SoapySDR device based on its index in the devices vector. This method initializes the SoapySDR
+         *  device, sets up the RX and TX streams, and configures the device parameters based on the current configuration. 
+         *  It also handles any necessary error checking and logging related to starting the device.
+         */
+        bool startSoapyDevice(size_t devIdx);
+        /**
+         * @brief Stops a SoapySDR device based on its index in the devices vector. This method deactivates the RX and 
+         *  TX streams, releases any resources associated with the device, and performs any necessary cleanup. It also 
+         *  handles error checking and logging related to stopping the device.
+         */
+        void stopSoapyDevice(size_t devIdx);
+        /**
+         * @brief Stops all SoapySDR devices that are currently active. This method iterates through all devices in the
+         *  devices vector and calls stopSoapyDevice for each one that is active. This is typically called during 
+         *  shutdown of the RadioManager to ensure that all SDR devices are cleanly stopped and resources are released.
+         */
+        void stopAllSoapyDevices();
 
-        std::mutex m_lock;
-        bool m_initialized;
-        bool m_debug;
-
-        std::unordered_map<uint8_t, ChannelState> m_channels;
-        std::vector<DeviceState> m_devices;
-
-        std::string m_radioStatusPubAddress;
-
-        std::atomic<bool> m_statusThreadStop;
-        std::thread m_statusThread;
-        std::unique_ptr<RuntimeContext> m_runtime;
-        uint64_t m_lastDiagnosticsLogMs;
-
-#if defined(HAS_GNURADIO_ZEROMQ)
-        void* m_zmqContext;
-        void* m_zmqPubSocket;
-#endif
+        /**
+         * @brief Reads samples from a SoapySDR device's RX stream. This method reads samples from the specified 
+         *  device's RX stream and fills the provided buffer with the received IQ samples. It also handles any necessary 
+         *  error checking and logging related to reading from the device.
+         * @param devIdx Index of the device
+         * @param iq Reference to a vector that will be filled with the complex float samples read from the device's RX stream.
+         * @returns bool True if the samples were successfully read from the device, otherwise false.
+         */
+        bool readSoapyRx(size_t devIdx, std::vector<std::complex<float>>& iq);
+        /**
+         * @brief Writes samples to a SoapySDR device's TX stream. This method writes the provided IQ samples to the 
+         *  specified device's TX stream for transmission. It also handles any necessary error checking and logging 
+         *  related to writing to the device, and manages timing information for timestamped transmissions if applicable.
+         * @param devIdx Index of the device
+         * @param iq Vector of complex float samples to write to the device's TX stream.
+         * @returns bool True if the samples were successfully written to the device, otherwise false.
+         */
+        bool writeSoapyTx(size_t devIdx, const std::vector<std::complex<float>>& iq);
+    #endif
     };
 }
 

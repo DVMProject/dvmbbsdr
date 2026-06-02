@@ -56,7 +56,9 @@ sdr:
     #   USRP over network:
     #     args: "driver=uhd,addr=192.168.10.2"
     #   Soapy LimeSDR:
-    #     args: "driver=soapy,device=lime"
+    #     args: "driver=lime"
+    #   Soapy bladeRF:
+    #     args: "driver=bladerf,serial=5519595f67984f95"
 
     # Optional fallback values used when fields are omitted in individual devices.
     defaults:
@@ -67,6 +69,18 @@ sdr:
         rxGain: 30
         txGain: 30
 
+        # Optional Soapy gain stage names.
+        #rxGainElement: "LNA"
+        #txGainElement: "VGA"
+
+        # Optional Soapy bandwidth controls (Hz).
+        #rxBandwidth: 300000
+        #txBandwidth: 300000
+
+        # Optional Soapy timing/clock source controls.
+        #clockSource: "internal"
+        #timeSource: "internal"
+
         # Center-frequency correction in PPM.
         freqCorrPpm: 0
 
@@ -74,12 +88,6 @@ sdr:
         # Useful to shift active channels away from SDR DC spike at center.
         #rxCenterOffsetHz: 0
         #txCenterOffsetHz: 0
-
-        # Optional: publish wideband RX IQ samples to ZeroMQ for external FFT viewers.
-        # Empty string disables export.
-        # Example: "tcp://127.0.0.1:5557"
-        #rxIqTapAddress: "tcp://127.0.0.1:5557"
-        # Topics are fixed when enabled: `wb-iq` and `modem-iq-<modemId>`.
 
     # Wideband channelization and transmission settings.
     # Rebuild-free hot retune is used when only channel frequencies change.
@@ -102,12 +110,21 @@ sdr:
           rxGain: 30
           txGain: 30
 
+          # Optional Soapy gain stage names.
+          #rxGainElement: "LNA"
+          #txGainElement: "VGA"
+
+          # Optional Soapy bandwidth controls (Hz).
+          #rxBandwidth: 300000
+          #txBandwidth: 300000
+
+          # Optional Soapy timing/clock source controls.
+          #clockSource: "internal"
+          #timeSource: "internal"
+
           # Optional antenna names (driver dependent; blank = default).
           #rxAntenna: ""
           #txAntenna: ""
-
-          # Optional per-device override for RX IQ ZeroMQ export tap.
-          #rxIqTapAddress: "tcp://127.0.0.1:5557"
 
         # Device 1: USRP (TX+RX capable)
         - args: "driver=uhd,addr=192.168.10.2"
@@ -126,17 +143,38 @@ sdr:
           rxGain: 30
           txGain: 30
 
+          # Optional Soapy gain stage names.
+          #rxGainElement: "LNA"
+          #txGainElement: "VGA"
+
+          # Optional Soapy bandwidth controls (Hz).
+          #rxBandwidth: 300000
+          #txBandwidth: 300000
+
+          # Optional Soapy timing/clock source controls.
+          #clockSource: "internal"
+          #timeSource: "internal"
+
           # Optional antenna names (driver dependent; blank = default).
           rxAntenna: ""
           txAntenna: ""
 
-          # Optional per-device override for RX IQ ZeroMQ export tap.
-          #rxIqTapAddress: "tcp://127.0.0.1:5558"
+        # Device 2: bladeRF via SoapySDR
+        - args: "driver=bladerf"
 
-    # Optional runtime status publisher for live SDR center/sample-rate updates over ZeroMQ.
-    # This avoids filesystem polling and is preferred for dynamic retune visualization.
-    #radioStatusPubAddress: "tcp://127.0.0.1:5567"
-    # Topic is fixed when enabled: `radio-state`.
+          sampleRate: 960000
+          freqCorrPpm: 0
+
+          rxGain: 30
+          txGain: 30
+
+          # Common bladeRF antenna paths:
+          #rxAntenna: "RX"
+          #txAntenna: "TX"
+
+          # Optional bladeRF gain stages:
+          #rxGainElement: "LNA"
+          #txGainElement: "VGA2"
 
 #
 # Virtual Modem Configuration

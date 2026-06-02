@@ -23,33 +23,10 @@ target_include_directories(common PRIVATE ${OPENSSL_INCLUDE_DIR} ${LIBDW_INCLUDE
 include(src/sdr/CMakeLists.txt)
 add_executable(dvmbbsdr ${common_INCLUDE} ${dvmsdr_SRC})
 
-target_link_libraries(dvmbbsdr PRIVATE common ${OPENSSL_LIBRARIES} ${LIBDW_LIBRARY} 
-    ${Boost_LIBRARIES} 
-    ${GNURADIO_PMT_LIBRARIES} 
-    ${GNURADIO_RUNTIME_LIBRARIES} 
-    ${GNURADIO_FILTER_LIBRARIES} 
-    ${GNURADIO_DIGITAL_LIBRARIES} 
-    ${GNURADIO_ANALOG_LIBRARIES} 
-    ${GNURADIO_AUDIO_LIBRARIES} 
-    ${GNURADIO_ZEROMQ_LIBRARIES}
-    ${GNURADIO_UHD_LIBRARIES} 
-    ${UHD_LIBRARIES} 
-    ${GNURADIO_BLOCKS_LIBRARIES} 
-    ${GNURADIO_OSMOSDR_LIBRARIES} 
-    gnuradio::gnuradio-analog 
-    gnuradio::gnuradio-blocks 
-    gnuradio::gnuradio-digital 
-    gnuradio::gnuradio-filter 
-    gnuradio::gnuradio-pmt 
-    Threads::Threads 
-    util)
+target_link_libraries(dvmbbsdr PRIVATE common ${OPENSSL_LIBRARIES} ${LIBDW_LIBRARY} Threads::Threads util)
 
-if(TARGET gnuradio::gnuradio-zeromq)
-    target_link_libraries(dvmbbsdr PRIVATE gnuradio::gnuradio-zeromq)
-endif()
-
-if(GNURADIO_ZEROMQ_LIBRARIES OR TARGET gnuradio::gnuradio-zeromq)
-    target_link_libraries(dvmbbsdr PRIVATE zmq)
+if(SOAPYSDR_FOUND)
+    target_link_libraries(dvmbbsdr PRIVATE ${SOAPYSDR_LIBRARIES})
 endif()
 
 target_include_directories(dvmbbsdr PRIVATE ${OPENSSL_INCLUDE_DIR} ${LIBDW_INCLUDE_DIR} 
@@ -59,6 +36,10 @@ target_include_directories(dvmbbsdr PRIVATE ${OPENSSL_INCLUDE_DIR} ${LIBDW_INCLU
     ${GNURADIO_OSMOSDR_INCLUDE_DIRS} 
     src 
     src/sdr)
+
+if(SOAPYSDR_FOUND)
+    target_include_directories(dvmbbsdr PRIVATE ${SOAPYSDR_INCLUDE_DIRS})
+endif()
 
 set(CPACK_SET_DESTDIR true)
 set(CPACK_PACKAGING_INSTALL_PREFIX "/usr/local")
