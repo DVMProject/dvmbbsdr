@@ -287,6 +287,7 @@ namespace modem
         uint8_t m_buffer[SERIAL_FB_LEN];
         uint16_t m_ptr;
         uint16_t m_len;
+        uint8_t m_readBuffer;
         bool m_dblFrame;
 
         bool m_debug;
