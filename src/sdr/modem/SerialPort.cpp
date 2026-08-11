@@ -14,6 +14,7 @@
 #include "modem/Modem.h"
 #include "common/Log.h"
 #include "common/Utils.h"
+#include "SDRMain.h"
 
 using namespace modem;
 
@@ -27,12 +28,6 @@ const char HARDWARE[] = concat(DESCRIPTION, __TIME__, __DATE__);
 const uint8_t PROTOCOL_VERSION = 4U;
 
 // ---------------------------------------------------------------------------
-//  Globals Variables
-// ---------------------------------------------------------------------------
-
-static uint8_t s_readBuffer = 0x00U;
-
-// ---------------------------------------------------------------------------
 //  Public Class Members
 // ---------------------------------------------------------------------------
 
@@ -43,6 +38,7 @@ SerialPort::SerialPort(modem::Modem* modem) :
     m_buffer(),
     m_ptr(0U),
     m_len(0U),
+    m_readBuffer(0x00U),
     m_dblFrame(false),
     m_debug(false),
     m_repeat()
@@ -61,9 +57,12 @@ void SerialPort::start()
 
 void SerialPort::process()
 {
-    while (availableInt(1U)) {
-        uint8_t c = readInt(1U);
+    while (true) {
+        const int available = availableInt(1U);
+        if (available <= 0)
+            break;
 
+        uint8_t c = readInt(1U);
         if (m_ptr == 0U) {
             if (c == DVM_SHORT_FRAME_START) {
                 // Handle the frame start correctly
@@ -117,6 +116,9 @@ void SerialPort::process()
                 uint8_t offset = 2U;
                 if (m_dblFrame)
                     offset = 3U;
+
+                if (m_modem->m_debug)
+                    Utils::dump(1U, "SerialPort::process() RX frame", m_buffer, m_ptr);
 
                 // DEBUG4("m_buffer [b0 - b2]", m_buffer[0], m_buffer[1], m_buffer[2]);
                 // DEBUG4("m_buffer [b3 - b5]", m_buffer[3], m_buffer[4], m_buffer[5]);
@@ -1028,7 +1030,12 @@ uint8_t SerialPort::setConfig(const uint8_t* data, uint8_t length)
     bool simplex = (data[0U] & 0x80U) == 0x80U;
 
     m_debug = (data[0U] & 0x10U) == 0x10U;
-    m_modem->m_debug = m_debug; // should we be doing this?
+
+    // keep command-line forced debug enabled even if host SET_CONFIG clears debug bit
+    if (!g_debug)
+        m_modem->m_debug = m_debug;
+    else
+        m_modem->m_debug = true;
 
     bool dcBlockerEnable = (data[1U] & 0x01U) == 0x01U;
     bool cosLockoutEnable = (data[1U] & 0x04U) == 0x04U;
@@ -1455,7 +1462,7 @@ void SerialPort::beginInt(uint8_t n, int speed)
 {
     switch (n) {
     case 1U:
-        s_readBuffer = 0x00U;
+        m_readBuffer = 0x00U;
         break;
     default:
         break;
@@ -1468,7 +1475,7 @@ int SerialPort::availableInt(uint8_t n)
 {
     switch (n) {
     case 1U:
-        return m_modem->m_port->read(&s_readBuffer, (uint8_t)(1 * sizeof(uint8_t)));
+        return m_modem->m_port->read(&m_readBuffer, (uint8_t)(1 * sizeof(uint8_t)));
     default:
         return 0;
     }
@@ -1492,7 +1499,7 @@ uint8_t SerialPort::readInt(uint8_t n)
 {
     switch (n) {
     case 1U:
-        return s_readBuffer;
+        return m_readBuffer;
     default:
         return 0U;
     }
