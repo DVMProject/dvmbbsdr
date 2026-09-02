@@ -14,6 +14,14 @@ The DVM Host software requires the library dependancies below. Generally, the so
 
 ### Dependencies
 
+#### Required:
+
+```
+sudo apt install gnuradio gr-osmosdr libhackrf-dev libuhd-dev libboost-dev libboost-log libboost-log-dev libzmq3-dev
+```
+
+#### Optional:
+
 If you want detailed stacktrace output on a crash, for compilation ensure `libdw-dev` is also installed. (`apt-get install libdw-dev`). For runtime you will need the `elfutils` package to be installed. (`apt-get install elfutils`).
 
 ### Build Instructions

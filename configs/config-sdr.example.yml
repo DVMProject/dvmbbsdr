@@ -3,7 +3,7 @@
 #
 
 # Flag indicating whether the host will run as a background or foreground task.
-daemon: true
+daemon: false
 
 #
 # Logging Configuration
@@ -63,6 +63,12 @@ sdr:
         # Wideband sample rate used for channelization and multi-carrier operation.
         sampleRate: 960000
 
+        # Optional: filter bandwidths for TX & RX ports on SDR in Hz
+        # Not all SDRs support this, inspect your SDR
+        # A value of 0 will default to automatic bandwidth selection
+        #rxBw: 1000000
+        #txBw: 1000000
+
         # Gain controls (dB).
         rxGain: 30
         txGain: 30
@@ -81,57 +87,65 @@ sdr:
         #rxIqTapAddress: "tcp://127.0.0.1:5557"
         # Topics are fixed when enabled: `wb-iq` and `modem-iq-<modemId>`.
 
+        
+
     # Wideband channelization and transmission settings.
     # Rebuild-free hot retune is used when only channel frequencies change.
     devices:
         # Device 0: RTL-SDR (RX-only)
-        - args: "driver=rtl,index=0"
+      - args: "driver=rtl,index=0"
 
-          # Wideband sample rate used for channelization and multi-carrier operation.
-          sampleRate: 960000
+        # Wideband sample rate used for channelization and multi-carrier operation.
+        sampleRate: 960000
 
-          # Center-frequency correction in PPM.
-          freqCorrPpm: 0
+        # Center-frequency correction in PPM.
+        freqCorrPpm: 0
 
-          # Optional per-device tuning center offsets (Hz).
-          # Example: keep RX channels ~25 kHz off DC spike.
-          #rxCenterOffsetHz: 25000
-          #txCenterOffsetHz: 0
+        # Optional per-device tuning center offsets (Hz).
+        # Example: keep RX channels ~25 kHz off DC spike.
+        #rxCenterOffsetHz: 25000
+        #txCenterOffsetHz: 0
 
-          # Gain controls (dB).
-          rxGain: 30
-          txGain: 30
+        # Gain controls (dB).
+        rxGain: 30
+        txGain: 30
 
-          # Optional antenna names (driver dependent; blank = default).
-          #rxAntenna: ""
-          #txAntenna: ""
+        # Optional antenna names (driver dependent; blank = default).
+        #rxAntenna: ""
+        #txAntenna: ""
 
-          # Optional per-device override for RX IQ ZeroMQ export tap.
-          #rxIqTapAddress: "tcp://127.0.0.1:5557"
+        # Optional per-device override for RX IQ ZeroMQ export tap.
+        #rxIqTapAddress: "tcp://127.0.0.1:5557"
 
         # Device 1: USRP (TX+RX capable)
-        - args: "driver=uhd,addr=192.168.10.2"
+      - args: "driver=uhd,addr=192.168.10.2"
 
-          # Wideband sample rate used for channelization and multi-carrier operation.
-          sampleRate: 960000
+        # Wideband sample rate used for channelization and multi-carrier operation.
+        sampleRate: 960000
 
-          # Center-frequency correction in PPM.
-          freqCorrPpm: 0
+        # Optional: filter bandwidths for TX & RX ports on SDR in Hz
+        # Not all SDRs support this, inspect your SDR
+        # A value of 0 will default to automatic bandwidth selection
+        #rxBw: 1000000
+        #txBw: 1000000
 
-          # Optional per-device tuning center offsets (Hz).
-          #rxCenterOffsetHz: 25000
-          #txCenterOffsetHz: 0
+        # Center-frequency correction in PPM.
+        freqCorrPpm: 0
 
-          # Gain controls (dB).
-          rxGain: 30
-          txGain: 30
+        # Optional per-device tuning center offsets (Hz).
+        #rxCenterOffsetHz: 25000
+        #txCenterOffsetHz: 0
 
-          # Optional antenna names (driver dependent; blank = default).
-          rxAntenna: ""
-          txAntenna: ""
+        # Gain controls (dB).
+        rxGain: 30
+        txGain: 30
 
-          # Optional per-device override for RX IQ ZeroMQ export tap.
-          #rxIqTapAddress: "tcp://127.0.0.1:5558"
+        # Optional antenna names (driver dependent; blank = default).
+        rxAntenna: ""
+        txAntenna: ""
+
+        # Optional per-device override for RX IQ ZeroMQ export tap.
+        #rxIqTapAddress: "tcp://127.0.0.1:5558"
 
     # Optional runtime status publisher for live SDR center/sample-rate updates over ZeroMQ.
     # This avoids filesystem polling and is preferred for dynamic retune visualization.

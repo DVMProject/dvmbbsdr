@@ -169,6 +169,8 @@ namespace radio
             size_t index;
             std::string args;
             double sampleRate;
+            double rxBw;
+            double txBw;
             double rxGain;
             double txGain;
             double freqCorrPpm;

@@ -41,6 +41,7 @@ target_link_libraries(dvmbbsdr PRIVATE common ${OPENSSL_LIBRARIES} ${LIBDW_LIBRA
     gnuradio::gnuradio-digital 
     gnuradio::gnuradio-filter 
     gnuradio::gnuradio-pmt 
+    SoapySDR 
     Threads::Threads 
     util)
 

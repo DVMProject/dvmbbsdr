@@ -101,3 +101,9 @@ __pycache__/
 *.exe
 *.out
 *.app
+
+# Non-example configs
+config.yml
+
+# Log directory
+logs/

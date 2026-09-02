@@ -20,6 +20,9 @@
 #include <gnuradio/sync_block.h>
 #include <gnuradio/top_block.h>
 
+#include <SoapySDR/Device.hpp>
+#include <SoapySDR/Logger.hpp>
+
 #if defined(HAS_GNURADIO_ZEROMQ)
 #include <zmq.h>
 #endif
@@ -1122,6 +1125,8 @@ bool RadioManager::parseConfig(yaml::Node& conf)
     yaml::Node defaults = sdrConf["defaults"];
 
     const double defaultSampleRate = defaults["sampleRate"].as<double>(960000.0);
+    const double defaultRxBw = defaults["rxBw"].as<double>(0.0);
+    const double defaultTxBw = defaults["txBw"].as<double>(0.0);
     const double defaultRxGain = defaults["rxGain"].as<double>(0.0);
     const double defaultTxGain = defaults["txGain"].as<double>(0.0);
     const double defaultFreqCorrPpm = defaults["freqCorrPpm"].as<double>(0.0);
@@ -1139,6 +1144,8 @@ bool RadioManager::parseConfig(yaml::Node& conf)
         def.index = 0U;
         def.args = "";
         def.sampleRate = defaultSampleRate;
+        def.rxBw = defaultRxBw;
+        def.txBw = defaultTxBw;
         def.rxGain = defaultRxGain;
         def.txGain = defaultTxGain;
         def.freqCorrPpm = defaultFreqCorrPpm;
@@ -1162,6 +1169,8 @@ bool RadioManager::parseConfig(yaml::Node& conf)
             state.index = i;
             state.args = dev["args"].as<std::string>("");
             state.sampleRate = dev["sampleRate"].as<double>(defaultSampleRate);
+            state.rxBw = dev["rxBw"].as<double>(defaultRxBw);
+            state.txBw = dev["txBw"].as<double>(defaultTxBw);
             state.rxGain = dev["rxGain"].as<double>(defaultRxGain);
             state.txGain = dev["txGain"].as<double>(defaultTxGain);
             state.freqCorrPpm = dev["freqCorrPpm"].as<double>(defaultFreqCorrPpm);
@@ -1340,6 +1349,7 @@ void RadioManager::startRadios()
             else if (m_debug) {
                 ::LogInfoEx(LOG_SDR, "SDR %zu RX sample rate, requested = %0.3f, actual = %0.3f", i, dev.sampleRate, rxActualRate);
             }
+            runtime.source->set_bandwidth(dev.rxBw);
             runtime.source->set_gain(dev.rxGain);
             runtime.source->set_freq_corr(dev.freqCorrPpm);
             if (!dev.rxAntenna.empty())
@@ -1422,6 +1432,7 @@ void RadioManager::startRadios()
             else if (m_debug) {
                 ::LogInfoEx(LOG_SDR, "SDR %zu TX sample rate, requested = %0.3f, actual = %0.3f", i, dev.sampleRate, txActualRate);
             }
+            runtime.sink->set_bandwidth(dev.txBw);
             runtime.sink->set_gain(dev.txGain);
             runtime.sink->set_freq_corr(dev.freqCorrPpm);
             if (!dev.txAntenna.empty())
